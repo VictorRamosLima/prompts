@@ -149,3 +149,109 @@ Instruções adicionais:
 4. Respeite as hierarquias e subtarefas mencionadas no input.
 
 O objetivo é transformar um conjunto de informações brutas em um texto claro, bem organizado e fácil de entender, preservando os detalhes no campo de observações, enquanto os resumos devem ser objetivos e sucintos.
+
+```sql
+SELECT
+    JSON_OBJECTAGG(
+        table_name,
+        JSON_OBJECT(
+            'columns', JSON_ARRAYAGG(
+                JSON_OBJECT(
+                    'name', column_name,
+                    'data_type', data_type,
+                    'is_nullable', CASE is_nullable WHEN 'YES' THEN TRUE ELSE FALSE END,
+                    'default_value', IFNULL(column_default, 'NULL'),
+                    'key', column_key
+                )
+            ),
+            'constraints', (
+                SELECT JSON_ARRAYAGG(
+                    JSON_OBJECT(
+                        'type',
+                            CASE tc.constraint_type
+                                WHEN 'PRIMARY KEY' THEN 'PRIMARY'
+                                WHEN 'FOREIGN KEY' THEN 'FOREIGN'
+                                WHEN 'UNIQUE' THEN 'UNIQUE'
+                                ELSE tc.constraint_type
+                            END,
+                        'columns', (
+                            SELECT JSON_ARRAYAGG(kcu.column_name)
+                            FROM information_schema.key_column_usage kcu
+                            WHERE kcu.constraint_name = tc.constraint_name
+                            AND kcu.table_schema = tc.table_schema
+                            AND kcu.table_name = tc.table_name
+                        ),
+                        'references', JSON_OBJECT(
+                            'referenced_table', (
+                                SELECT kcu2.referenced_table_name
+                                FROM information_schema.key_column_usage kcu2
+                                WHERE kcu2.constraint_name = tc.constraint_name
+                                AND kcu2.table_schema = tc.table_schema
+                                AND kcu2.table_name = tc.table_name
+                                AND kcu2.referenced_table_name IS NOT NULL
+                                LIMIT 1
+                            ),
+                            'referenced_columns', (
+                                SELECT JSON_ARRAYAGG(kcu2.referenced_column_name)
+                                FROM information_schema.key_column_usage kcu2
+                                WHERE kcu2.constraint_name = tc.constraint_name
+                                AND kcu2.table_schema = tc.table_schema
+                                AND kcu2.table_name = tc.table_name
+                                AND kcu2.referenced_table_name IS NOT NULL
+                            )
+                        ),
+                        'on_update', (
+                            SELECT rc.update_rule
+                            FROM information_schema.referential_constraints rc
+                            WHERE rc.constraint_name = tc.constraint_name
+                            AND rc.constraint_schema = tc.table_schema
+                            LIMIT 1
+                        ),
+                        'on_delete', (
+                            SELECT rc.delete_rule
+                            FROM information_schema.referential_constraints rc
+                            WHERE rc.constraint_name = tc.constraint_name
+                            AND rc.constraint_schema = tc.table_schema
+                            LIMIT 1
+                        )
+                    )
+                )
+                FROM information_schema.table_constraints tc
+                WHERE tc.table_schema = col.table_schema
+                AND tc.table_name = col.table_name
+            ),
+            'indexes', (
+                SELECT JSON_ARRAYAGG(
+                    JSON_OBJECT(
+                        'name', stat.index_name,
+                        'type', stat.index_type,
+                        'is_unique', NOT stat.non_unique,
+                        'columns', (
+                            SELECT JSON_ARRAYAGG(s.column_name)
+                            FROM information_schema.statistics s
+                            WHERE s.table_schema = stat.table_schema
+                            AND s.table_name = stat.table_name
+                            AND s.index_name = stat.index_name
+                        )
+                    )
+                )
+                FROM information_schema.statistics stat
+                WHERE stat.table_schema = col.table_schema
+                AND stat.table_name = col.table_name
+            )
+        )
+    ) AS result_json
+FROM (
+    SELECT DISTINCT
+        col.table_name,
+        col.column_name,
+        col.data_type,
+        col.is_nullable,
+        col.column_default,
+        col.column_key,
+        col.table_schema
+    FROM information_schema.columns col
+    WHERE col.table_schema = DATABASE()
+) AS col
+GROUP BY col.table_schema;
+```
