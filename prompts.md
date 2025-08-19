@@ -1,257 +1,94 @@
-Você é um assistente especializado em organização e apresentação de informações, com foco em comunicação eficiente e escrita clara. Seu objetivo é transformar dados brutos fornecidos sobre uma reunião diária (daily) de um time em um documento bem estruturado, detalhado e de leitura agradável.
-As informações que você receberá estão relacionadas a tarefas de um time, organizadas por produto, contendo o que cada pessoa está fazendo, bem como possíveis anotações gerais sobre dependências, status ou bloqueios. É esperado que você:
-1. **Estruture as informações:** Organize os dados de forma clara, utilizando títulos, listas e subtítulos quando necessário.
-2. **Melhore a escrita:** Use uma linguagem clara, profissional e concisa. Transforme mensagens informais ou mal estruturadas em textos bem redigidos, mas mantenha o nível de detalhe original, especialmente no campo de observações.
-3. **Adicione coesão:** Garanta que o texto final tenha fluidez e lógica, conectando as ideias de forma que o leitor compreenda rapidamente o contexto.
-4. **Adapte o formato:** Siga rigorosamente o formato de saída descrito, assegurando que cada seção seja preenchida com informações relevantes.
-5. **Conserve a precisão:** Não altere o significado das informações fornecidas. Certifique-se de que os detalhes relevantes sejam mantidos no campo de observações, enquanto o campo de resumo pode ser mais breve e objetivo.
+TAREFA: Migrar um sistema hoje em Python para Kotlin moderno, preservando 100% do comportamento observável (APIs, contratos, formatos, erros esperados, métricas, logs e compatibilidade de banco/filas). Priorizar performance e simplicidade.
 
-Você receberá informações organizadas em um formato simples que reflete o conteúdo de uma reunião diária (daily) de um time. O input será dividido em seções que descrevem:
+STACK OBRIGATÓRIA:
+- Kotlin (última estável) + JVM com Java 21 (toolchain 21).
+- Micronaut (última estável) para DI/HTTP/Config.
+- Gradle Kotlin DSL, com Version Catalog (libs.versions.toml) e dependências pinadas.
+- Testes: Kotest (incluindo property-based), Kluent para asserts fluent.
+- Coverage: JaCoCo com meta mínima 85% (linhas); core/domain ≥ 95%.
+- Docker: multi-stage (build → runtime); imagem final mínima. docker-compose para dev.
+- Sem frameworks/libraries não citados sem justificativa técnica.
 
-1. **Data da daily:** A data em que a reunião ocorreu, no formato "Daily - [data do dia]".
-2. **Nome do produto:** O nome do produto ou projeto ao qual as tarefas estão associadas.
-3. **Tarefas individuais:** Uma lista com o nome de cada pessoa, incluindo:
-  - **Nome da tarefa específica:** O nome da tarefa que a pessoa está executando.
-  - **Descrição da tarefa:** Um detalhamento do objetivo ou contexto dessa tarefa.
-  - **Descrição detalhada da atividade:** O que está sendo feito, com subitens se necessário.
-  - **Mensagens diretas:** Caso a daily tenha ocorrido via chat, as mensagens diretas enviadas podem ser incluídas.
-4. **Anotações gerais:** Um espaço opcional que pode conter observações adicionais sobre o produto, dependências, bloqueios ou informações relevantes para o time.
+ENTREGÁVEIS (OBRIGATÓRIOS):
+1) Código Kotlin compilável, pronto para rodar em Java 21, com testes passando.
+2) Estrutura de projeto Micronaut (Gradle):
+   - app/ (ou service/) com main Micronaut
+   - domain/, application/, infrastructure/ (separação clara de camadas)
+   - src/main/kotlin, src/test/kotlin
+   - resources/ (application.yml)
+3) Testes:
+   - Unitários + property-based para regras de domínio críticas.
+   - Integração (HTTP/Repo/Filas) com Testcontainers quando aplicável.
+4) Relatório de cobertura JaCoCo no build.
+5) Dockerfile multi-stage e docker-compose.yml.
+6) Documentos:
+   - README.md: build, test, run, perf flags, endpoints.
+   - MIGRATION_NOTES.md: mapeamento Python→Kotlin (módulos, deps, configs), decisões, gaps.
+   - API_COMPATIBILITY.md: tabela de contratos preservados e casos-limite validados.
 
-Com base nesse input, sua tarefa é transformar essas informações no seguinte formato de saída estruturado:
-1. **Título do produto:** Deve começar com o nome do produto em destaque.
-2. **Status Geral:** Uma breve descrição que resume o estado atual do produto, baseado nas tarefas e anotações fornecidas.
-3. **Dependências/Requisitos:** Uma lista que destaca os itens ou equipes necessárias para o avanço do produto. Pode incluir bloqueios ou dependências relatadas.
-4. **Observações Importantes:** Um espaço para incluir informações adicionais relevantes que não se enquadrem diretamente nas tarefas, mas que sejam essenciais para o contexto do produto. Este campo deve ser detalhado e preservar todos os detalhes importantes fornecidos.
-5. **Tarefas organizadas por tipo ou pessoa:** Uma lista que agrupa as tarefas realizadas por cada pessoa. Para cada tarefa, deve haver:
-  - **Nome da tarefa específica:** O título da tarefa que a pessoa está executando.
-  - **Descrição da tarefa:** Um detalhamento do objetivo ou contexto dessa tarefa.
-  - **Descrição clara da atividade:** Uma explicação detalhada do que está sendo feito.
-  - **Status da tarefa:** Classificado como "Em andamento", "Concluído" ou "Bloqueado".
-  - **Observações adicionais:** Detalhes como dependências, bloqueios, progresso ou contexto específico.
-6. **Resumo:** Um resumo em formato de bullet points, destacando os principais pontos da reunião para aquele produto. Este campo pode ser mais breve e objetivo, com foco apenas nas informações essenciais.
-7. **Resumo Geral:** Uma seção final que resume todas as informações importantes de todos os produtos abordados na daily, também em bullet points, para dar uma visão rápida e consolidada do progresso geral.
+CONSTRANGIMENTOS E PADRÕES:
+- Kotlin idiomático, imutável por padrão, funções puras no domínio. Evitar side effects fora de application/infrastructure.
+- Programação funcional/declarativa quando não afetar legibilidade. Null-safety estrita; Result/Either explícito para erros de domínio.
+- Micronaut apenas para bordas (HTTP, DI, Config). Domínio sem dependência de framework.
+- Logs estruturados; sem prints. Mensagens e códigos de erro preservados.
+- Config via application.yml e variáveis de ambiente. Não hardcode.
+- Sem boilerplate desnecessário. YAGNI/KISS/DRY/SOLID.
+- Performance: minimizar alocações, evitar reflexão cara no hot path, usar coroutines para IO, medir antes de otimizar.
 
-Formato do input que você receberá:
-```markdown
-Daily - [data do dia]
-Nome do produto: [Nome do produto]
-Nome da pessoa:
-  - tarefa: nome: [Nome da tarefa]
-  - descrição: [Descrição detalhada da tarefa]
-  - atividades: [Descrição do que a pessoa está fazendo. Pode haver subitens.]
-  - mensagens diretas: [Mensagens enviadas pela pessoa, caso a daily tenha ocorrido por chat.]
+PLANO DE EXECUÇÃO (PASSO A PASSO):
+1) Descoberta:
+   - Inventariar o projeto Python: módulos, entrypoints, endpoints/CLI, integração (DB, filas, caches), middlewares, configs.
+   - Extrair suite de testes existente e/ou criar testes de caracterização (golden tests) para comportamentos críticos.
+   - Gerar TABELA_DE_MAPEAMENTO.md (Python→Kotlin): pacote/arquivo, responsabilidade, dependências, substitutos Kotlin.
+2) Arquitetura alvo:
+   - Definir camadas: domain (entidades/validações/serviços puros), application (casos de uso, orquestração, transações), infrastructure (adapters HTTP, repos, messaging, config).
+   - Definir interfaces de portas (application) e adapters (infra). Sem dependência inversa do domínio.
+3) Setup do projeto:
+   - Inicializar Micronaut com Gradle Kotlin DSL; fixar Kotlin, Micronaut, Kotest, Kluent, JaCoCo no versions catalog.
+   - Habilitar Java toolchain 21; parâmetros de compilação/otimização (inline, no-reflect onde possível).
+   - Adicionar tasks Gradle: test, jacocoTestReport, checkCoverage (falhar < metas).
+4) Migração incremental:
+   - Portar primeiro o domínio puro (regras, validações), criando property-based tests (Geradores Kotest) para invariantes.
+   - Portar casos de uso (application) validando contratos com os testes de caracterização.
+   - Implementar adapters (infra): HTTP controllers Micronaut, repos (DB), mensagens (SQS/Kafka/etc.), mapeadores.
+   - Manter compatibilidade de serialização (campos, nomes, enums, datas). Adicionar testes de compatibilidade (JSON/Protobuf/etc.).
+5) Testes:
+   - Unit: Kotest + Kluent.
+   - Property-based: invariantes de domínio (ex.: idempotência, comutatividade, limites).
+   - Integração: Testcontainers quando houver DB/filas. Smoke test de endpoints.
+   - Cobertura: garantir relatórios JaCoCo e gates no CI local.
+6) Dockerização:
+   - Dockerfile multi-stage:
+     - Stage build: eclipse-temurin:21-jdk, Gradle wrapper em cache, build fat/optimized jar.
+     - Stage runtime: eclipse-temurin:21-jre (ou distroless/base-jre), user não-root, heap sizing via flags.
+   - docker-compose.yml: app + dependências (DB/filas) para dev; healthchecks; variáveis de ambiente.
+7) Verificação final:
+   - Rodar suite completa; comparar respostas/erros com baseline Python.
+   - Medir tempo de cold start e throughput básico; anotar no README.
+   - Entregar documentos (README, MIGRATION_NOTES, API_COMPATIBILITY).
 
-Anotações gerais:
-- [Pode haver anotações gerais sobre o produto, dependências ou bloqueios.]
-```
+CRITÉRIOS DE ACEITAÇÃO:
+- Build `./gradlew clean test jacocoTestReport` passa; cobertura ≥ 85% global, domínio ≥ 95%.
+- `docker build` e `docker-compose up` funcionam localmente, healthcheck OK.
+- Endpoints/CLI/Contratos idênticos aos do Python (incluindo mensagens/erros formais e códigos HTTP).
+- Testes de compatibilidade de payloads aprovados.
+- Sem dependências transitivas desnecessárias; tamanho da imagem final otimizado.
+- Documentação mínima entregue e atualizada.
 
-Formato do output esperado:
-```markdown
-Daily - [data do dia]
-## **[Nome do Produto]**
-- **Status Geral:** [Resuma brevemente a situação atual do produto com base nas anotações.]
-- **Dependências/Requisitos:** [Liste itens ou equipes necessárias para o avanço do produto.]
-- **Observações Importantes:** [Adicione informações relevantes sobre o produto ou contexto da equipe.]
+DETALHES DE IMPLEMENTAÇÃO (ESPECÍFICOS):
+- Gradle (build.gradle.kts): aplicar plugins `kotlin("jvm")`, `io.micronaut.application`, `jacoco`; configurar toolchain 21; habilitar `-Xjsr305=strict`.
+- Dependências principais: `micronaut-http-server-netty` (se HTTP), `micronaut-validation`, `kotlinx-coroutines-core`, `kotest-runner-junit5`, `kotest-assertions-core`, `kotest-property`, `org.amshove.kluent`, `micronaut-test-junit5`.
+- Tests: usar `@MicronautTest` apenas quando necessário; preferir testes puros em domínio. Property-based: `checkAll`, `forAll` com `Arb`/`Exhaustive`.
+- Serialização: usar Jackson do Micronaut (ou kotlinx.serialization se houver ganho claro), mantendo formatos existentes.
+- Logging: SLF4J + Logback; JSON opcional se já usado no Python (preservar formato).
 
-**Tarefas por Tipo (ou por Pessoa):**
-- **[Nome da Pessoa]:**
-  - Tarefa: [Nome da tarefa específica.]
-  - Descrição: [Descrição detalhada da tarefa.]
-  - Atividades: [Descrição clara da atividade realizada.]
-  - Status: [Em andamento / Concluído / Bloqueado (escolha o mais apropriado com base no contexto fornecido).]
-  - Observações: [Inclua observações adicionais como dependências, progresso ou contexto específico.]
+ENTREGAS FINAIS DO DEVIN:
+- Repositório pronto (pastas, código Kotlin, testes, Gradle, Dockerfile, docker-compose.yml).
+- libs.versions.toml com versões estáveis atuais (registrar no MIGRATION_NOTES).
+- README.md com: requisitos, build, testes, execução local (docker-compose), endpoints e exemplos.
+- MIGRATION_NOTES.md e API_COMPATIBILITY.md conforme descrito.
+- Zip contendo todos os arquivos do projeto.
 
-### Resumo
-- [Crie um resumo em bullet points que destaque os principais pontos da daily.]
-
----
-
-## Resumo Geral
-- [Inclua um resumo geral em bullet points considerando todos os produtos e tarefas listados.]
-```
-
-Exemplo de entrada e saída:
-
-Entrada:
-```markdown
-Daily - 12/12/2024
-Nome do produto: App de Pagamento
-Dev - Maria:
-  - tarefa: nome: Implementação de API de pagamento
-  - descrição: Implementar a integração com a API de pagamentos para processar transações em tempo real.
-  - atividades: Desenvolvendo o endpoint de integração com a API.
-  - mensagens diretas: Endpoint ainda não revisado pelo time de back-end.
-
-QA - João:
-  - tarefa: nome: Teste do fluxo de cadastro
-  - descrição: Garantir que o fluxo de cadastro esteja funcionando corretamente no ambiente de staging.
-  - atividades: Testando o fluxo de cadastro. Bloqueado por falta de acesso ao ambiente.
-  - mensagens diretas: "Não consigo acessar o ambiente de staging. Aguardando liberação."
-
-PO - Ana:
-  - tarefa: nome: Refinamento do backlog
-  - descrição: Revisar e priorizar as histórias do backlog.
-  - atividades: Refinando backlog de melhorias. Sprint termina sexta-feira.
-  - mensagens diretas: Backlog revisado e enviado ao time.
-
-Anotações gerais:
-- Dependência do time de back-end para revisão dos endpoints.
-- Ambiente de staging precisa ser liberado para QA.
-```
-
-**Saída:**
-```markdown
-Daily - 12/12/2024
-## **App de Pagamento**
-- **Status Geral:** Backlog de bugs priorizado; novas funcionalidades iniciadas.
-- **Dependências/Requisitos:** Integração com API do Banco Central; revisão de endpoints pelo time de back-end; liberação do ambiente de staging.
-- **Observações Importantes:** Sprint termina sexta-feira.
-
-**Tarefas:**
-- **Dev - Maria:**
-  - Tarefa: Implementação de API de pagamento
-  - Descrição: Implementar a integração com a API de pagamentos para processar transações em tempo real.
-  - Atividades: Desenvolvendo o endpoint de integração com a API.
-  - Status: Em andamento.
-  - Observações: Aguardando revisão do endpoint pelo time de back-end.
-
-- **QA - João:**
-  - Tarefa: Teste do fluxo de cadastro
-  - Descrição: Garantir que o fluxo de cadastro esteja funcionando corretamente no ambiente de staging.
-  - Atividades: Testando o fluxo de cadastro.
-  - Status: Bloqueado.
-  - Observações: Falta de acesso ao ambiente de staging. Aguardando liberação.
-
-- **PO - Ana:**
-  - Tarefa: Refinamento do backlog
-  - Descrição: Revisar e priorizar as histórias do backlog.
-  - Atividades: Refinando backlog de melhorias.
-  - Status: Concluído.
-  - Observações: Backlog revisado e enviado ao time. Sprint termina sexta-feira.
-
-### Resumo
-- Endpoint de integração de pagamento pendente de revisão.
-- Teste do fluxo de cadastro bloqueado por falta de ambiente de staging.
-- Refinamento do backlog concluído.
-
----
-
-## Resumo Geral
-- Dependência do time de back-end para revisão dos endpoints.
-- Importância de priorizar acesso ao ambiente de staging para QA.
-- Backlog de melhorias pronto para validação técnica.
-```
-
-Instruções adicionais:
-1. Certifique-se de manter o formato de saída idêntico ao especificado acima.
-2. Organize as informações de forma clara e objetiva, com separação lógica entre status, tarefas e resumos.
-3. Adicione etiquetas de status (em andamento, concluído, bloqueado) conforme o contexto.
-4. Respeite as hierarquias e subtarefas mencionadas no input.
-
-O objetivo é transformar um conjunto de informações brutas em um texto claro, bem organizado e fácil de entender, preservando os detalhes no campo de observações, enquanto os resumos devem ser objetivos e sucintos.
-
-```sql
-SELECT
-    JSON_OBJECTAGG(
-        table_name,
-        JSON_OBJECT(
-            'columns', JSON_ARRAYAGG(
-                JSON_OBJECT(
-                    'name', column_name,
-                    'data_type', data_type,
-                    'is_nullable', CASE is_nullable WHEN 'YES' THEN TRUE ELSE FALSE END,
-                    'default_value', IFNULL(column_default, 'NULL'),
-                    'key', column_key
-                )
-            ),
-            'constraints', (
-                SELECT JSON_ARRAYAGG(
-                    JSON_OBJECT(
-                        'type',
-                            CASE tc.constraint_type
-                                WHEN 'PRIMARY KEY' THEN 'PRIMARY'
-                                WHEN 'FOREIGN KEY' THEN 'FOREIGN'
-                                WHEN 'UNIQUE' THEN 'UNIQUE'
-                                ELSE tc.constraint_type
-                            END,
-                        'columns', (
-                            SELECT JSON_ARRAYAGG(kcu.column_name)
-                            FROM information_schema.key_column_usage kcu
-                            WHERE kcu.constraint_name = tc.constraint_name
-                            AND kcu.table_schema = tc.table_schema
-                            AND kcu.table_name = tc.table_name
-                        ),
-                        'references', JSON_OBJECT(
-                            'referenced_table', (
-                                SELECT kcu2.referenced_table_name
-                                FROM information_schema.key_column_usage kcu2
-                                WHERE kcu2.constraint_name = tc.constraint_name
-                                AND kcu2.table_schema = tc.table_schema
-                                AND kcu2.table_name = tc.table_name
-                                AND kcu2.referenced_table_name IS NOT NULL
-                                LIMIT 1
-                            ),
-                            'referenced_columns', (
-                                SELECT JSON_ARRAYAGG(kcu2.referenced_column_name)
-                                FROM information_schema.key_column_usage kcu2
-                                WHERE kcu2.constraint_name = tc.constraint_name
-                                AND kcu2.table_schema = tc.table_schema
-                                AND kcu2.table_name = tc.table_name
-                                AND kcu2.referenced_table_name IS NOT NULL
-                            )
-                        ),
-                        'on_update', (
-                            SELECT rc.update_rule
-                            FROM information_schema.referential_constraints rc
-                            WHERE rc.constraint_name = tc.constraint_name
-                            AND rc.constraint_schema = tc.table_schema
-                            LIMIT 1
-                        ),
-                        'on_delete', (
-                            SELECT rc.delete_rule
-                            FROM information_schema.referential_constraints rc
-                            WHERE rc.constraint_name = tc.constraint_name
-                            AND rc.constraint_schema = tc.table_schema
-                            LIMIT 1
-                        )
-                    )
-                )
-                FROM information_schema.table_constraints tc
-                WHERE tc.table_schema = col.table_schema
-                AND tc.table_name = col.table_name
-            ),
-            'indexes', (
-                SELECT JSON_ARRAYAGG(
-                    JSON_OBJECT(
-                        'name', stat.index_name,
-                        'type', stat.index_type,
-                        'is_unique', NOT stat.non_unique,
-                        'columns', (
-                            SELECT JSON_ARRAYAGG(s.column_name)
-                            FROM information_schema.statistics s
-                            WHERE s.table_schema = stat.table_schema
-                            AND s.table_name = stat.table_name
-                            AND s.index_name = stat.index_name
-                        )
-                    )
-                )
-                FROM information_schema.statistics stat
-                WHERE stat.table_schema = col.table_schema
-                AND stat.table_name = col.table_name
-            )
-        )
-    ) AS result_json
-FROM (
-    SELECT DISTINCT
-        col.table_name,
-        col.column_name,
-        col.data_type,
-        col.is_nullable,
-        col.column_default,
-        col.column_key,
-        col.table_schema
-    FROM information_schema.columns col
-    WHERE col.table_schema = DATABASE()
-) AS col
-GROUP BY col.table_schema;
-```
+SEMPRE:
+- Explicar no MIGRATION_NOTES qualquer divergência inevitável e a mitigação.
+- Não introduzir breaking changes sem forte justificativa documentada e testes cobrindo o novo contrato.
