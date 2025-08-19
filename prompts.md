@@ -27,68 +27,83 @@ ENTREGÁVEIS (OBRIGATÓRIOS):
    - API_COMPATIBILITY.md: tabela de contratos preservados e casos-limite validados.
 
 CONSTRANGIMENTOS E PADRÕES:
-- Kotlin idiomático, imutável por padrão, funções puras no domínio. Evitar side effects fora de application/infrastructure.
-- Programação funcional/declarativa quando não afetar legibilidade. Null-safety estrita; Result/Either explícito para erros de domínio.
-- Micronaut apenas para bordas (HTTP, DI, Config). Domínio sem dependência de framework.
-- Logs estruturados; sem prints. Mensagens e códigos de erro preservados.
-- Config via application.yml e variáveis de ambiente. Não hardcode.
-- Sem boilerplate desnecessário. YAGNI/KISS/DRY/SOLID.
-- Performance: minimizar alocações, evitar reflexão cara no hot path, usar coroutines para IO, medir antes de otimizar.
+- Kotlin idiomático. `val` por padrão; funções puras em domain. Side effects apenas em application/infrastructure.
+- Programação funcional/declarativa sem perder legibilidade. Null-safety estrita; erros de domínio via tipos explícitos (sealed) e `Result`/`Either` caseiro.
+- Micronaut apenas nas bordas (HTTP, DI, Config). Domínio sem dependência de framework.
+- Logs estruturados; sem prints. Mensagens/códigos de erro preservados.
+- Config em application.yml + variáveis de ambiente. Sem hardcode.
+- YAGNI/KISS/DRY/SOLID. Sem boilerplate.
+- Performance: minimizar alocações, evitar reflexão no hot path, coroutines para IO, `inline` onde fizer sentido, `tailrec` quando aplicável. Medir antes de otimizar.
+
+VARIÂNCIA, TIPOS E MODELAGEM:
+- Declarar variância nos tipos genéricos: `out T` para produtores, `in T` para consumidores. Usar-site variance quando necessário (`List<out T>`, `Comparable<in T>`).
+- APIs de portas devem expor tipos com variância adequada (`Repository<in C, out R>`, `Mapper<in A, out B>`).
+- Preferir interfaces funcionais (SAM) com `fun interface` para estratégias, validadores, policies e mapeadores; permitir SAM-conversion com lambdas.
+- Usar sealed classes/ sealed interfaces para modelar somas de tipos (eventos, erros, estados). Exigir `when` exaustivo sem `else`.
+- Encapsular invariantes em value objects (`@JvmInline value class`) quando leve.
+- Usar `typealias` para funções de alto-uso (ex.: `typealias Validator<T> = (T) -> Either<Error, T>`).
+- Extensões puras para enriquecer domínio sem acoplamento.
+- Preferir `Sequence` e operações lazy quando houver pipelines grandes; evitar materializações desnecessárias.
+- Scoped functions (`let/run/also/apply/with`): usar intensivamente para clareza, porém com no máximo 1 nível de aninhamento. Acima disso, refatorar em funções nomeadas. Proibir `also` + `apply` aninhados além do limite.
 
 PLANO DE EXECUÇÃO (PASSO A PASSO):
 1) Descoberta:
-   - Inventariar o projeto Python: módulos, entrypoints, endpoints/CLI, integração (DB, filas, caches), middlewares, configs.
-   - Extrair suite de testes existente e/ou criar testes de caracterização (golden tests) para comportamentos críticos.
+   - Inventariar projeto Python: módulos, entrypoints, endpoints/CLI, integrações (DB/filas/caches), middlewares, configs.
+   - Extrair suite de testes ou criar testes de caracterização (golden tests) para comportamentos críticos.
    - Gerar TABELA_DE_MAPEAMENTO.md (Python→Kotlin): pacote/arquivo, responsabilidade, dependências, substitutos Kotlin.
 2) Arquitetura alvo:
-   - Definir camadas: domain (entidades/validações/serviços puros), application (casos de uso, orquestração, transações), infrastructure (adapters HTTP, repos, messaging, config).
-   - Definir interfaces de portas (application) e adapters (infra). Sem dependência inversa do domínio.
+   - Camadas: domain (entidades/validadores/serviços puros), application (casos de uso, orquestração, transações), infrastructure (adapters HTTP, repos, messaging, config).
+   - Portas e adapters genéricos com variância explícita; policies via SAM.
 3) Setup do projeto:
-   - Inicializar Micronaut com Gradle Kotlin DSL; fixar Kotlin, Micronaut, Kotest, Kluent, JaCoCo no versions catalog.
-   - Habilitar Java toolchain 21; parâmetros de compilação/otimização (inline, no-reflect onde possível).
-   - Adicionar tasks Gradle: test, jacocoTestReport, checkCoverage (falhar < metas).
+   - Inicializar Micronaut com Gradle Kotlin DSL; fixar versões no version catalog.
+   - Toolchain Java 21; `-Xjsr305=strict`; ativar `-Xjvm-default=all` se necessário para interfaces.
+   - Tasks Gradle: `test`, `jacocoTestReport`, `checkCoverage` (falhar < metas).
 4) Migração incremental:
-   - Portar primeiro o domínio puro (regras, validações), criando property-based tests (Geradores Kotest) para invariantes.
-   - Portar casos de uso (application) validando contratos com os testes de caracterização.
-   - Implementar adapters (infra): HTTP controllers Micronaut, repos (DB), mensagens (SQS/Kafka/etc.), mapeadores.
-   - Manter compatibilidade de serialização (campos, nomes, enums, datas). Adicionar testes de compatibilidade (JSON/Protobuf/etc.).
+   - Portar primeiro o domínio (sealed/values/variância/SAMs), com property-based tests para invariantes.
+   - Portar casos de uso (application) validando contratos via testes de caracterização.
+   - Implementar adapters (infra): controllers Micronaut, repos, mensageria, mapeadores. Serialização compatível.
 5) Testes:
-   - Unit: Kotest + Kluent.
-   - Property-based: invariantes de domínio (ex.: idempotência, comutatividade, limites).
-   - Integração: Testcontainers quando houver DB/filas. Smoke test de endpoints.
-   - Cobertura: garantir relatórios JaCoCo e gates no CI local.
+   - Unitários com Kotest/Kluent.
+   - Property-based: invariantes (associatividade, idempotência, limites, monotonicidade, leis de mapeamento).
+   - Integração: Testcontainers p/ DB/filas. Smoke HTTP.
+   - Tests de compatibilidade de payload (JSON/Protobuf) byte-to-byte quando aplicável.
 6) Dockerização:
    - Dockerfile multi-stage:
-     - Stage build: eclipse-temurin:21-jdk, Gradle wrapper em cache, build fat/optimized jar.
-     - Stage runtime: eclipse-temurin:21-jre (ou distroless/base-jre), user não-root, heap sizing via flags.
-   - docker-compose.yml: app + dependências (DB/filas) para dev; healthchecks; variáveis de ambiente.
+     - build: eclipse-temurin:21-jdk; cache do Gradle; build fat/optimized jar.
+     - runtime: eclipse-temurin:21-jre (ou distroless); user não-root; flags de heap e GC.
+   - docker-compose.yml: app + deps (DB/filas), healthchecks, envs.
 7) Verificação final:
    - Rodar suite completa; comparar respostas/erros com baseline Python.
-   - Medir tempo de cold start e throughput básico; anotar no README.
-   - Entregar documentos (README, MIGRATION_NOTES, API_COMPATIBILITY).
+   - Medir cold start e throughput; anotar no README.
+   - Entregar README, MIGRATION_NOTES, API_COMPATIBILITY.
 
 CRITÉRIOS DE ACEITAÇÃO:
-- Build `./gradlew clean test jacocoTestReport` passa; cobertura ≥ 85% global, domínio ≥ 95%.
-- `docker build` e `docker-compose up` funcionam localmente, healthcheck OK.
-- Endpoints/CLI/Contratos idênticos aos do Python (incluindo mensagens/erros formais e códigos HTTP).
-- Testes de compatibilidade de payloads aprovados.
-- Sem dependências transitivas desnecessárias; tamanho da imagem final otimizado.
+- `./gradlew clean test jacocoTestReport` passa; cobertura ≥ 85% global, domínio ≥ 95%.
+- `docker build` e `docker-compose up` OK com healthcheck.
+- Contratos/erros/formatos idênticos ao Python.
+- Payload-compat tests aprovados.
+- Imagem final enxuta; sem dependências desnecessárias.
 - Documentação mínima entregue e atualizada.
 
 DETALHES DE IMPLEMENTAÇÃO (ESPECÍFICOS):
-- Gradle (build.gradle.kts): aplicar plugins `kotlin("jvm")`, `io.micronaut.application`, `jacoco`; configurar toolchain 21; habilitar `-Xjsr305=strict`.
-- Dependências principais: `micronaut-http-server-netty` (se HTTP), `micronaut-validation`, `kotlinx-coroutines-core`, `kotest-runner-junit5`, `kotest-assertions-core`, `kotest-property`, `org.amshove.kluent`, `micronaut-test-junit5`.
-- Tests: usar `@MicronautTest` apenas quando necessário; preferir testes puros em domínio. Property-based: `checkAll`, `forAll` com `Arb`/`Exhaustive`.
-- Serialização: usar Jackson do Micronaut (ou kotlinx.serialization se houver ganho claro), mantendo formatos existentes.
-- Logging: SLF4J + Logback; JSON opcional se já usado no Python (preservar formato).
+- Gradle (build.gradle.kts): plugins `kotlin("jvm")`, `io.micronaut.application`, `jacoco`. Toolchain 21. `kotlinOptions { freeCompilerArgs += listOf("-Xjsr305=strict") }`.
+- Dependências: `micronaut-http-server-netty` (se HTTP), `micronaut-validation`, `kotlinx-coroutines-core`, `kotest-runner-junit5`, `kotest-assertions-core`, `kotest-property`, `org.amshove.kluent`, `micronaut-test-junit5`.
+- Sealed + Result/Either: implementar tipos como `sealed interface DomainError` e `sealed interface Either<out L, out R>`. `map/flatMap/fold` covariantes; parâmetros de entrada contravariantes (`in`).
+- Portas genéricas com variância:
+  - `fun interface Mapper<in A, out B> { fun map(a: A): B }`
+  - `interface Repository<in K, in C : Command, out E : Entity> { suspend fun create(cmd: C): E; suspend fun find(key: K): E? }`
+- Funções inline/reified para mapeamento/reflection controlada; evitar reflexão pesada em runtime.
+- `@MicronautTest` apenas quando necessário; priorizar testes puros. Property-based: `checkAll`, `forAll` com `Arb`/`Exhaustive`.
+- Scoped functions: guideline — `apply` para build de objetos mutáveis locais, `also` para efeitos colaterais, `let` para encadeamento nulo/transformação, `run` para escopo local; no máximo 1 aninhamento.
+- Serialização: Jackson Micronaut (ou kotlinx.serialization se ganho mensurável). Preservar nomes/casos/camel/kebab/datas exatos. Tests de roundtrip.
+- Logging: SLF4J + Logback, campos estruturados. Sem stacktraces em hot path a menos que necessário.
 
 ENTREGAS FINAIS DO DEVIN:
-- Repositório pronto (pastas, código Kotlin, testes, Gradle, Dockerfile, docker-compose.yml).
+- Repositório pronto (código Kotlin, testes, Gradle, Dockerfile, docker-compose.yml).
 - libs.versions.toml com versões estáveis atuais (registrar no MIGRATION_NOTES).
-- README.md com: requisitos, build, testes, execução local (docker-compose), endpoints e exemplos.
+- README.md com requisitos, build, testes, execução local (docker-compose), endpoints e exemplos.
 - MIGRATION_NOTES.md e API_COMPATIBILITY.md conforme descrito.
-- Zip contendo todos os arquivos do projeto.
 
 SEMPRE:
-- Explicar no MIGRATION_NOTES qualquer divergência inevitável e a mitigação.
-- Não introduzir breaking changes sem forte justificativa documentada e testes cobrindo o novo contrato.
+- Documentar no MIGRATION_NOTES qualquer divergência e mitigação.
+- Não introduzir breaking changes sem justificativa forte e testes cobrindo o novo contrato.
