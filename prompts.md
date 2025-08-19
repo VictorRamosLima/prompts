@@ -98,6 +98,26 @@ DETALHES DE IMPLEMENTAÇÃO (ESPECÍFICOS):
 - Serialização: Jackson Micronaut (ou kotlinx.serialization se ganho mensurável). Preservar nomes/casos/camel/kebab/datas exatos. Tests de roundtrip.
 - Logging: SLF4J + Logback, campos estruturados. Sem stacktraces em hot path a menos que necessário.
 
+VERSÕES PINADAS:
+- Kotlin: 2.2.10
+- Java (Eclipse Temurin): 21.0.8
+- Gradle: 8.14.3
+- Micronaut Framework: 4.9.2
+- Micronaut Gradle Plugin (io.micronaut.application): 4.5.4
+- Kotest: 6.0.0
+- Kotest Property: 6.0.0
+- Kluent: 1.73
+- JUnit Jupiter: 5.13.4
+- Testcontainers (Java): 1.21.3
+- kotlinx-coroutines-core: 1.10.2
+- kotlinx-serialization-json (opcional): 1.9.0
+- JaCoCo: 0.8.13
+- SLF4J API: 2.0.17
+- Logback Classic: 1.5.18
+- Docker base images:
+  - build: eclipse-temurin:21.0.8_9-jdk
+  - runtime: eclipse-temurin:21.0.8_9-jre
+
 ENTREGAS FINAIS DO DEVIN:
 - Repositório pronto (código Kotlin, testes, Gradle, Dockerfile, docker-compose.yml).
 - libs.versions.toml com versões estáveis atuais (registrar no MIGRATION_NOTES).
