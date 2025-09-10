@@ -1,66 +1,61 @@
 Contexto
-- Sistema migrado de Python para Kotlin. Objetivo: validar paridade funcional e de regras de negócio entre os repositórios legado e migração, apontar divergências, sugerir correções e abrir PRs.
-- Repositórios:
-  • Legacy (Python): <PY_REPO_URL> @ <PY_BRANCH_OR_SHA>
-  • Migração (Kotlin/Java 21): <KT_REPO_URL> @ <KT_BRANCH_OR_SHA>
-- Stack Kotlin: Gradle, Kotlin 2.x, testes com Kotest, MockK, Testcontainers; estáticos com Detekt; cobertura com JaCoCo. Framework: <Micronaut|Spring|Ktor>.
+- Precisamos auditar a suíte de testes do projeto Kotlin para elevar cobertura efetiva, remover test smells, corrigir uso inadequado de mocks e estabilizar testes assíncronos.
+- Repositório/branch-alvo: <KT_REPO_URL> @ <KT_BRANCH_OR_SHA>
+- Stack de testes: JUnit 5, Kotest, MockK, kotlinx-coroutines-test, (opcional) Turbine para Flow, JaCoCo (cobertura), PIT (mutation testing).
 
 Objetivos (DoD)
-1) 100% de endpoints/handlers/processos de domínio do Python mapeados para equivalentes em Kotlin.
-2) Catálogo de regras de negócio extraído do Python e confrontado com o Kotlin (paridade, divergência, lacuna).
-3) Testes gerados/ajustados no Kotlin para comprovar equivalência (unit, property-based, contratos de API, integrações essenciais).
-4) Relatórios e PRs criados com plano de correções priorizado (blocker/major/minor) e evidências (traços, diffs, casos de teste, métricas).
+1) Mapa completo de cobertura (linhas e ramos) por módulo/pacote/classe e Top 20 trechos não cobertos, com plano de teste para cada.
+2) Relatório de test smells e más práticas (mocks relaxados, any() excessivo, sleeps, asserts fracos etc.) com correções propostas.
+3) Suíte estabilizada: sem flakiness detectável em 20 execuções consecutivas; testes de corrotinas/Flow rodando sob runTest/StandardTestDispatcher.
+4) Ganhos mínimos: +10pp em cobertura de linhas no domínio crítico, +15pp em branches nos arquivos mais sensíveis, MSI (mutation score) ≥ 70% no domínio.
+5) PRs pequenos e coesos com melhorias de infraestrutura de teste e casos novos/ajustados; relatórios versionados em /reports e /docs.
 
 Entregáveis
-- docs/MIGRATION_AUDIT.md: visão executiva, métricas (itens mapeados, divergências, lacunas), riscos e próximos passos.
-- docs/BUSINESS_RULES_CATALOG_(py).md e docs/BUSINESS_RULES_CATALOG_(kt).md.
-- reports/PARITY_MATRIX.csv: Python_entity → Kotlin_entity; tipo (endpoint/UC/domínio/job/evento); status (match/diverge/gap); referências (arquivos:linhas; commits).
-- reports/GAPS_AND_CHANGES.md: divergências e lacunas com severidade, impacto, proposta de mudança e esforço estimado.
-- reports/API_COMPATIBILITY.md: diffs de contratos (REST/gRPC/eventos/filas), esquemas e mapeamentos de códigos de erro.
-- reports/TEST_PLAN.md: matriz de testes (unit, property, contrato, integração), dados de teste e cobertura-alvo.
-- reports/AUDIT_SUMMARY.json: resumo estruturado (para consumo por CI/BI).
+- docs/TEST_AUDIT.md: visão executiva, KPIs, riscos e próximos passos.
+- reports/COVERAGE_BASELINE.html|xml e reports/COVERAGE_GAPS.csv (arquivo:linha, tipo: linha|ramo, razão e estratégia de cobertura).
+- reports/MUTATION_REPORT.html e reports/MUTATION_SUMMARY.md (MSI por módulo, mutantes vivos/críticos).
+- reports/TEST_SMELLS.md: itens com severidade (blocker/major/minor), exemplo de código antes/depois e referência.
+- reports/ASYNC_STABILITY.md: problemas de concorrência/tempo (clock, dispatchers, Flow) e correções.
 - PRs:
-  • PR-Tests+Docs: adição/ajustes de testes, relatórios e validações.
-  • PR-Fixes: correções mínimas no Kotlin para fechar gaps prioritários.
-- Tags/artefatos: SHAs usados, logs de execução, links de CI, percentuais de cobertura.
+  • PR-TestInfra: configuração/ajustes de JaCoCo, PIT, coroutines-test, Turbine (se usado), tasks Gradle.
+  • PR-Tests: novos testes e refactors de testes (subdividido por módulo).
+  • PR-Fixes (se necessário): pequenos ajustes no código para testabilidade (injeção de Clock/Dispatcher, reduzir estáticos etc.).
 
-Procedimento (Playbook — siga na ordem, 1 step por linha)
-1) Clonar ambos repositórios; fixar em <PY_BRANCH_OR_SHA> e <KT_BRANCH_OR_SHA>; registrar SHAs.
-2) Executar indexação/Wiki/Search dos repositórios; construir visão de arquitetura (módulos, camadas, entidades, fluxos, endpoints, jobs, eventos, integrações externas).
-3) No Python, extrair catálogo de regras: varrer handlers/use-cases/services/domínio/testes/docs; consolidar em BUSINESS_RULES_CATALOG_(py) com campos: id, descrição, precondições, pós-condições, invariantes, erros, side-effects, idempotência, consistência, relógio/tempo, moeda/localização, limites de taxa, concorrência, transações, tolerância a falhas; incluir referências (arquivos:linhas; commit).
-4) No Kotlin, repetir a extração e gerar BUSINESS_RULES_CATALOG_(kt) com mesmos campos e referências.
-5) Construir PARITY_MATRIX.csv relacionando entidades Python↔Kotlin: endpoint/rota, payloads/DTOs, códigos de status/erros, casos de uso, comandos/eventos, repositórios/gateways, mapeamentos de exceções, contratos externos (HTTP/SQS/Kafka/gRPC), configurações/feature flags.
-6) Gerar conjunto de casos de verificação “golden” a partir do Python: para cada regra, derivar entradas mínimas/limítrofes/negativas; quando possível, executar no Python para capturar outputs esperados e serializar em fixtures estáveis.
-7) No Kotlin, implementar/verificar testes:
-   - Unit: comportamento de domínio e serviços.
-   - Property-based (Kotest): propriedades invariantes, metamórficas e limites; seeds fixos para reprodutibilidade.
-   - Contratos (API): validação de esquemas, status codes, headers, erros padronizados.
-   - Integração essencial (Testcontainers): repositórios, filas/eventos e downstreams críticos.
-   - Critérios: falha sempre que divergir do expected do Python ou violar propriedades.
-8) Rodar pipeline Kotlin: build, detekt, testes, jacoco; gerar cobertura; salvar relatórios.
-9) Identificar divergências: lógica, bordas, padrões de erro, idempotência, ordering, precision/rounding, timezones/clock, retries/circuit-breakers, consistência eventual, transações, paralelismo; documentar em GAPS_AND_CHANGES.md com severidade e impacto.
-10) Para cada divergência blocker/major, propor fix minimal e criar patch (isolado, coeso, pequeno), com testes de proteção; preparar PR-Fixes com Conventional Commits e descrição objetiva, linkando itens da PARITY_MATRIX e casos de teste.
-11) Preparar PR-Tests+Docs com todos relatórios, fixtures e testes adicionados/ajustados; anexar métricas (itens mapeados, % cobertura, # asserts property-based, # contratos verificados).
-12) Gerar MIGRATION_AUDIT.md com: sumário executivo, tabela de KPIs, lista de gaps, decisões tomadas, trade-offs, e backlog de melhorias não bloqueantes.
-13) Publicar AUDIT_SUMMARY.json com contagens e referências de artefatos; anexar links de CI e wikis.
-14) Entregar relatório final nesta conversa com: sumário, KPIs, links dos PRs, matriz de paridade, principais divergências e recomendações.
+Procedimento (passo-a-passo objetivo)
+1) Indexar o repositório; gerar visão de módulos, pacotes, classes e mapeamento atual de testes (por convenção de pastas e nomes). Registrar SHA.
+2) Rodar pipeline atual de testes e cobertura (Gradle): capturar baseline (linhas/branches por arquivo) e exportar XML/HTML do JaCoCo. Persistir em reports/COVERAGE_BASELINE.*.
+3) Rodar mutation testing (PIT com pitest-junit5 e suporte Kotlin) nos módulos de domínio: gerar MSI por módulo e lista de mutantes vivos; persistir em reports/MUTATION_*.
+4) Varrer testes e coletar test smells com busca estática + heurísticas:
+   - MockK: mocks com `relaxed = true`; uso de `any()`/`coAny()` como curinga onde é possível `eq(...)`/`match { ... }`/captura (`slot`, `capture`); ausência de `verify(exactly = N)`/`confirmVerified(...)`; uso de `spyk` indevido; verificação de ordem quando necessário (`verifyOrder`, `verifySequence`).
+   - Assíncrono: uso de `runBlocking`/`Thread.sleep`/delays reais; ausência de `runTest`/`StandardTestDispatcher`/controle de scheduler; coletar Flows sem Turbine/técnica equivalente; depender de `Dispatchers.IO/Main` reais; não isolar `Clock`/tempo.
+   - Asserts fracos: `assertTrue/False` genéricos; ausência de mensagens; não validação de erros/status codes/campos críticos; snapshot sem contrato.
+   - Estrutura: testes grandes (fixture geral), lógica condicional em teste, dependência de I/O/rede, dados mágicos, repetição de boilerplate (falta de builders/Arb).
+5) Para cada smell, sugerir correção concreta com diff mínimo e exemplo antes/depois; classificar severidade/impacto.
+6) Identificar Top 20 lacunas de cobertura (linhas e branches) por impacto de negócio/risco. Para cada, propor caso(s) de teste objetivo(s) cobrindo felizes/borda/negativos; quando envolver corrotinas/Flow, usar `runTest`, dispatcher de teste e, se aplicável, Turbine.
+7) Estabilidade: criar job que executa os testes 20x em sequência; coletar flakiness (falhas intermitentes) e logs. Para testes com falha intermitente, aplicar correções (clock fake, dispatcher, await determinístico, eliminação de sleep/polling, verificação de ordem/eventos).
+8) Melhorias de infraestrutura:
+   - Adicionar/ajustar tasks Gradle para JaCoCo (incluindo branches), publicação de relatórios e enforcement de thresholds por módulo (failOnViolation configurável).
+   - Configurar PIT (targetClasses, mutators relevantes, exclusões justificadas) e task de relatório agregada.
+   - Padronizar utilitários de teste: `TestClock`/`FixedClock`, `TestDispatcherProvider`, builders/Arb para objetos de domínio, helpers de matchers fortes.
+9) Implementar casos de teste novos/refactors priorizados (menores PRs por módulo), garantindo clareza e isolamento; substituir `any()` por `eq`/`match`/capturas; remover relaxados ou justificar explicitamente; adicionar `confirmVerified` quando fizer sentido.
+10) Reexecutar cobertura e PIT; registrar ganhos vs baseline; atualizar KPIs em docs/TEST_AUDIT.md e reports/COVERAGE_GAPS.csv.
+11) Publicar PRs com Conventional Commits; anexar links dos relatórios e evidências; responder a comentários se necessário.
+12) Entregar nesta conversa: sumário executivo (KPIs), Top 10 smells e gaps por impacto, links dos PRs e caminhos dos relatórios.
 
-Padrões e critérios
-- Estilo Kotlin: imutabilidade por padrão, funções puras onde aplicável, erros modelados com Result/Either/selados; sem reflection em hot paths; evitar alocações desnecessárias.
-- Testes: nomes dados como especificações; cobrir happy/edge/negative; seeds estáveis; falhar em comportamento não-paritário.
-- Cobertura mínima: ≥85% linhas no domínio e ≥95% para regras críticas; reportar módulo a módulo.
-- Performance: para rotas/algoritmos críticos, adicionar microbenchmarks JMH e relatar variação >±10% vs baseline (se houver).
-- Segurança: preservar semântica de autorização/escopos, validação de entrada, sanitização, segredos/configs; nunca relaxar checks.
-- Observabilidade: garantir correspondência de métricas/logs/tracing de negócio; alinhar nomes e cardinalidades.
-- Contratos: qualquer mudança de schema/erro requer migração documentada e versão de contrato.
+Critérios e metas
+- Cobertura alvo: Domínio ≥ 85% linhas; Branches ≥ 80%; Classes críticas ≥ 90% linhas.
+- Mutation testing: MSI ≥ 70% no domínio; mutantes sobreviventes críticos documentados.
+- Estabilidade: 0 falhas intermitentes em 20 execuções consecutivas; tempo total de suíte aceitável (< X min, definir).
+- Qualidade de mocks: `relaxed` proibido por padrão; permitido apenas quando explicitamente justificado. Evitar `any()` onde `eq`/`match`/`capture` é viável; verificar contagem e ordem quando relevante.
+- Corrotinas/Flow: todos os testes com `runTest`; uso de `StandardTestDispatcher`/scheduler; coletar Flow com Turbine (ou equivalente) quando verificação de sequência/erro/completion for necessária.
 
-Parâmetros de execução (preencher antes de rodar)
-- Serviços externos e credenciais de teste (mock/fake sempre que possível): <...>
-- Nome do job/serviço crítico a priorizar: <...>
-- Limites de tempo para testes de integração: <...>
-- Cobertura alvo por módulo: <...>
+Parâmetros de execução (preencher)
+- Módulos/prioridades de domínio: <...>
+- Thresholds por módulo (linhas/branches/MSI): <...>
+- Tempo máximo de suíte: <...>
+- Integrações externas a isolar (fakes/mocks): <...>
 
 Saída esperada nesta conversa
-- Resumo executivo (≤25 linhas) com KPIs.
-- Tabela compacta dos Top 10 gaps por impacto.
-- Links dos PRs e caminhos dos relatórios/artefatos no repositório.
+- Resumo executivo (≤20 linhas) com KPIs (cobertura linhas/branches, MSI, flakiness).
+- Tabela Top 10 smells e Top 10 gaps de cobertura por impacto, com arquivo:linha e ação recomendada.
+- Links dos PRs e paths dos relatórios em /reports e /docs.
