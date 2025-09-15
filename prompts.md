@@ -61,41 +61,26 @@ Saída esperada nesta conversa
 - Links dos PRs e paths dos relatórios em /reports e /docs.
 
 ```kotlin
-// build.gradle.kts
-plugins {
-    kotlin("jvm") version "2.0.20"
-    `java`
-}
-
-repositories { mavenCentral() }
-
-val jaxwsVer = "4.0.3"
-
-dependencies {
-    // Runtime JAX-WS RI (Metro)
-    implementation("jakarta.xml.ws:jakarta.xml.ws-api:4.0.2")
-    implementation("com.sun.xml.ws:jaxws-rt:$jaxwsVer")
-    testImplementation(kotlin("test"))
-}
-
-val wsdl = layout.projectDirectory.file("src/main/resources/MeuServico.wsdl")
-val genDir = layout.buildDirectory.dir("generated/sources/wsimport")
-
-sourceSets.main {
-    java.srcDir(genDir)
-}
-
 tasks.register<JavaExec>("wsimport") {
     group = "codegen"
     description = "Gera stubs JAX-WS a partir do WSDL"
-    inputs.file(wsdl); outputs.dir(genDir)
-    classpath = configurations.detachedConfiguration(
-        dependencies.create("com.sun.xml.ws:jaxws-tools:$jaxwsVer")
-    )
-    mainClass.set("com.sun.tools.ws.wscompile.WsimportTool")
-    args("-d", genDir.get().asFile.absolutePath, "-Xnocompile", wsdl.get().asFile.absolutePath)
-}
 
-tasks.compileJava { dependsOn("wsimport") }
-tasks.compileKotlin { dependsOn("wsimport") }
+    val wsdl = file("src/main/resources/MeuServico.wsdl")
+    val genDir = layout.buildDirectory.dir("generated/sources/wsimport").get().asFile
+
+    inputs.file(wsdl)
+    outputs.dir(genDir)
+
+    classpath = configurations.detachedConfiguration(
+        dependencies.create("com.sun.xml.ws:jaxws-tools:4.0.3")
+    )
+    // Aqui é o main certo
+    mainClass.set("com.sun.tools.ws.WsImport")
+
+    args(
+        "-d", genDir.absolutePath,
+        "-Xnocompile",
+        wsdl.absolutePath
+    )
+}
 ```
