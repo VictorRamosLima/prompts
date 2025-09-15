@@ -59,3 +59,42 @@ Saída esperada nesta conversa
 - Resumo executivo (≤20 linhas) com KPIs (cobertura linhas/branches, MSI, flakiness).
 - Tabela Top 10 smells e Top 10 gaps de cobertura por impacto, com arquivo:linha e ação recomendada.
 - Links dos PRs e paths dos relatórios em /reports e /docs.
+
+```kotlin
+sourceSets {
+    main {
+        java {
+            srcDir(generatedSources)
+        }
+    }
+}
+
+tasks.register<JavaExec>("xjc") {
+    group = "build"
+    description = "Gera classes Java a partir de XSD usando XJC (Jakarta JAXB)."
+
+    val schemaDir = file("src/main/resources/xsd")
+    val outputDir = generatedSources.get().asFile
+
+    inputs.dir(schemaDir)
+    outputs.dir(outputDir)
+
+    classpath = configurations.detachedConfiguration(
+        dependencies.create("org.glassfish.jaxb:jaxb-xjc:$jaxbVersion")
+    )
+
+    mainClass.set("com.sun.tools.xjc.XJCFacade")
+    args = listOf(
+        "-d", outputDir.absolutePath,
+        "-p", "com.exemplo.modelo",
+        schemaDir.resolve("pessoa.xsd").absolutePath
+    )
+}
+
+tasks.named("compileJava") {
+    dependsOn("xjc")
+}
+tasks.named("compileKotlin") {
+    dependsOn("xjc")
+}
+```
