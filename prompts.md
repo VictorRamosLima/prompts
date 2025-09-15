@@ -61,40 +61,41 @@ Saída esperada nesta conversa
 - Links dos PRs e paths dos relatórios em /reports e /docs.
 
 ```kotlin
-sourceSets {
-    main {
-        java {
-            srcDir(generatedSources)
-        }
-    }
+// build.gradle.kts
+plugins {
+    kotlin("jvm") version "2.0.20"
+    `java`
 }
 
-tasks.register<JavaExec>("xjc") {
-    group = "build"
-    description = "Gera classes Java a partir de XSD usando XJC (Jakarta JAXB)."
+repositories { mavenCentral() }
 
-    val schemaDir = file("src/main/resources/xsd")
-    val outputDir = generatedSources.get().asFile
+val jaxwsVer = "4.0.3"
 
-    inputs.dir(schemaDir)
-    outputs.dir(outputDir)
+dependencies {
+    // Runtime JAX-WS RI (Metro)
+    implementation("jakarta.xml.ws:jakarta.xml.ws-api:4.0.2")
+    implementation("com.sun.xml.ws:jaxws-rt:$jaxwsVer")
+    testImplementation(kotlin("test"))
+}
 
+val wsdl = layout.projectDirectory.file("src/main/resources/MeuServico.wsdl")
+val genDir = layout.buildDirectory.dir("generated/sources/wsimport")
+
+sourceSets.main {
+    java.srcDir(genDir)
+}
+
+tasks.register<JavaExec>("wsimport") {
+    group = "codegen"
+    description = "Gera stubs JAX-WS a partir do WSDL"
+    inputs.file(wsdl); outputs.dir(genDir)
     classpath = configurations.detachedConfiguration(
-        dependencies.create("org.glassfish.jaxb:jaxb-xjc:$jaxbVersion")
+        dependencies.create("com.sun.xml.ws:jaxws-tools:$jaxwsVer")
     )
-
-    mainClass.set("com.sun.tools.xjc.XJCFacade")
-    args = listOf(
-        "-d", outputDir.absolutePath,
-        "-p", "com.exemplo.modelo",
-        schemaDir.resolve("pessoa.xsd").absolutePath
-    )
+    mainClass.set("com.sun.tools.ws.wscompile.WsimportTool")
+    args("-d", genDir.get().asFile.absolutePath, "-Xnocompile", wsdl.get().asFile.absolutePath)
 }
 
-tasks.named("compileJava") {
-    dependsOn("xjc")
-}
-tasks.named("compileKotlin") {
-    dependsOn("xjc")
-}
+tasks.compileJava { dependsOn("wsimport") }
+tasks.compileKotlin { dependsOn("wsimport") }
 ```
