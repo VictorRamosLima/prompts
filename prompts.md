@@ -1,86 +1,194 @@
-Contexto
-- Precisamos auditar a suíte de testes do projeto Kotlin para elevar cobertura efetiva, remover test smells, corrigir uso inadequado de mocks e estabilizar testes assíncronos.
-- Repositório/branch-alvo: <KT_REPO_URL> @ <KT_BRANCH_OR_SHA>
-- Stack de testes: JUnit 5, Kotest, MockK, kotlinx-coroutines-test, (opcional) Turbine para Flow, JaCoCo (cobertura), PIT (mutation testing).
+// InstrumentedInterceptorTest.kt
+package com.company.metrics
 
-Objetivos (DoD)
-1) Mapa completo de cobertura (linhas e ramos) por módulo/pacote/classe e Top 20 trechos não cobertos, com plano de teste para cada.
-2) Relatório de test smells e más práticas (mocks relaxados, any() excessivo, sleeps, asserts fracos etc.) com correções propostas.
-3) Suíte estabilizada: sem flakiness detectável em 20 execuções consecutivas; testes de corrotinas/Flow rodando sob runTest/StandardTestDispatcher.
-4) Ganhos mínimos: +10pp em cobertura de linhas no domínio crítico, +15pp em branches nos arquivos mais sensíveis, MSI (mutation score) ≥ 70% no domínio.
-5) PRs pequenos e coesos com melhorias de infraestrutura de teste e casos novos/ajustados; relatórios versionados em /reports e /docs.
+import io.kotest.core.spec.style.DescribeSpec
+import io.kotest.matchers.doubles.shouldBeGreaterThan
+import io.kotest.matchers.ints.shouldBeEqualTo
+import io.kotest.matchers.shouldBe
+import io.kotest.assertions.timing.eventually
+import io.mockk.*
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry
+import io.micrometer.core.instrument.Tags
+import io.micronaut.core.annotation.AnnotationMetadata
+import io.micronaut.context.BeanContext
+import io.micronaut.aop.MethodInvocationContext
+import io.micronaut.core.type.ReturnType
+import io.micronaut.context.invoker.DefaultExecutableMethod
+import io.opentracing.Span
+import io.opentracing.Tracer
+import java.util.*
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.CompletionStage
+import kotlin.time.Duration
+import kotlin.time.ExperimentalTime
 
-Entregáveis
-- docs/TEST_AUDIT.md: visão executiva, KPIs, riscos e próximos passos.
-- reports/COVERAGE_BASELINE.html|xml e reports/COVERAGE_GAPS.csv (arquivo:linha, tipo: linha|ramo, razão e estratégia de cobertura).
-- reports/MUTATION_REPORT.html e reports/MUTATION_SUMMARY.md (MSI por módulo, mutantes vivos/críticos).
-- reports/TEST_SMELLS.md: itens com severidade (blocker/major/minor), exemplo de código antes/depois e referência.
-- reports/ASYNC_STABILITY.md: problemas de concorrência/tempo (clock, dispatchers, Flow) e correções.
-- PRs:
-  • PR-TestInfra: configuração/ajustes de JaCoCo, PIT, coroutines-test, Turbine (se usado), tasks Gradle.
-  • PR-Tests: novos testes e refactors de testes (subdividido por módulo).
-  • PR-Fixes (se necessário): pequenos ajustes no código para testabilidade (injeção de Clock/Dispatcher, reduzir estáticos etc.).
+@OptIn(ExperimentalTime::class)
+class InstrumentedInterceptorTest : DescribeSpec({
 
-Procedimento (passo-a-passo objetivo)
-1) Indexar o repositório; gerar visão de módulos, pacotes, classes e mapeamento atual de testes (por convenção de pastas e nomes). Registrar SHA.
-2) Rodar pipeline atual de testes e cobertura (Gradle): capturar baseline (linhas/branches por arquivo) e exportar XML/HTML do JaCoCo. Persistir em reports/COVERAGE_BASELINE.*.
-3) Rodar mutation testing (PIT com pitest-junit5 e suporte Kotlin) nos módulos de domínio: gerar MSI por módulo e lista de mutantes vivos; persistir em reports/MUTATION_*.
-4) Varrer testes e coletar test smells com busca estática + heurísticas:
-   - MockK: mocks com `relaxed = true`; uso de `any()`/`coAny()` como curinga onde é possível `eq(...)`/`match { ... }`/captura (`slot`, `capture`); ausência de `verify(exactly = N)`/`confirmVerified(...)`; uso de `spyk` indevido; verificação de ordem quando necessário (`verifyOrder`, `verifySequence`).
-   - Assíncrono: uso de `runBlocking`/`Thread.sleep`/delays reais; ausência de `runTest`/`StandardTestDispatcher`/controle de scheduler; coletar Flows sem Turbine/técnica equivalente; depender de `Dispatchers.IO/Main` reais; não isolar `Clock`/tempo.
-   - Asserts fracos: `assertTrue/False` genéricos; ausência de mensagens; não validação de erros/status codes/campos críticos; snapshot sem contrato.
-   - Estrutura: testes grandes (fixture geral), lógica condicional em teste, dependência de I/O/rede, dados mágicos, repetição de boilerplate (falta de builders/Arb).
-5) Para cada smell, sugerir correção concreta com diff mínimo e exemplo antes/depois; classificar severidade/impacto.
-6) Identificar Top 20 lacunas de cobertura (linhas e branches) por impacto de negócio/risco. Para cada, propor caso(s) de teste objetivo(s) cobrindo felizes/borda/negativos; quando envolver corrotinas/Flow, usar `runTest`, dispatcher de teste e, se aplicável, Turbine.
-7) Estabilidade: criar job que executa os testes 20x em sequência; coletar flakiness (falhas intermitentes) e logs. Para testes com falha intermitente, aplicar correções (clock fake, dispatcher, await determinístico, eliminação de sleep/polling, verificação de ordem/eventos).
-8) Melhorias de infraestrutura:
-   - Adicionar/ajustar tasks Gradle para JaCoCo (incluindo branches), publicação de relatórios e enforcement de thresholds por módulo (failOnViolation configurável).
-   - Configurar PIT (targetClasses, mutators relevantes, exclusões justificadas) e task de relatório agregada.
-   - Padronizar utilitários de teste: `TestClock`/`FixedClock`, `TestDispatcherProvider`, builders/Arb para objetos de domínio, helpers de matchers fortes.
-9) Implementar casos de teste novos/refactors priorizados (menores PRs por módulo), garantindo clareza e isolamento; substituir `any()` por `eq`/`match`/capturas; remover relaxados ou justificar explicitamente; adicionar `confirmVerified` quando fizer sentido.
-10) Reexecutar cobertura e PIT; registrar ganhos vs baseline; atualizar KPIs em docs/TEST_AUDIT.md e reports/COVERAGE_GAPS.csv.
-11) Publicar PRs com Conventional Commits; anexar links dos relatórios e evidências; responder a comentários se necessário.
-12) Entregar nesta conversa: sumário executivo (KPIs), Top 10 smells e gaps por impacto, links dos PRs e caminhos dos relatórios.
+  val registry = SimpleMeterRegistry()
+  val tracer = mockk<Tracer>(relaxed = true)
+  val span = mockk<Span>(relaxed = true)
 
-Critérios e metas
-- Cobertura alvo: Domínio ≥ 85% linhas; Branches ≥ 80%; Classes críticas ≥ 90% linhas.
-- Mutation testing: MSI ≥ 70% no domínio; mutantes sobreviventes críticos documentados.
-- Estabilidade: 0 falhas intermitentes em 20 execuções consecutivas; tempo total de suíte aceitável (< X min, definir).
-- Qualidade de mocks: `relaxed` proibido por padrão; permitido apenas quando explicitamente justificado. Evitar `any()` onde `eq`/`match`/`capture` é viável; verificar contagem e ordem quando relevante.
-- Corrotinas/Flow: todos os testes com `runTest`; uso de `StandardTestDispatcher`/scheduler; coletar Flow com Turbine (ou equivalente) quando verificação de sequência/erro/completion for necessária.
+  every { tracer.activeSpan() } returns span
 
-Parâmetros de execução (preencher)
-- Módulos/prioridades de domínio: <...>
-- Thresholds por módulo (linhas/branches/MSI): <...>
-- Tempo máximo de suíte: <...>
-- Integrações externas a isolar (fakes/mocks): <...>
+  fun resetRegistry() {
+    registry.clear()
+  }
 
-Saída esperada nesta conversa
-- Resumo executivo (≤20 linhas) com KPIs (cobertura linhas/branches, MSI, flakiness).
-- Tabela Top 10 smells e Top 10 gaps de cobertura por impacto, com arquivo:linha e ação recomendada.
-- Links dos PRs e paths dos relatórios em /reports e /docs.
+  fun totalCounter(name: String): Double =
+    registry.find(name).counters().sumOf { it.count() }
 
-```kotlin
-tasks.register<JavaExec>("wsimport") {
-    group = "codegen"
-    description = "Gera stubs JAX-WS a partir do WSDL"
+  fun timerCount(name: String): Long =
+    registry.find(name).timers().counter()?.count()?.toLong() ?: registry.find(name).timers().stream().mapToLong { it.count().toLong() }.sum()
 
-    val wsdl = file("src/main/resources/MeuServico.wsdl")
-    val genDir = layout.buildDirectory.dir("generated/sources/wsimport").get().asFile
+  beforeTest {
+    clearAllMocks()
+    every { tracer.activeSpan() } returns span
+    resetRegistry()
+  }
 
-    inputs.file(wsdl)
-    outputs.dir(genDir)
+  describe("InstrumentedInterceptor - sync success") {
+    it("records success counter and timer and annotates span with id and correlation id") {
+      val correlation = object : CorrelationIdContext { override val id: String? = "corr-1" }
+      val interceptor = InstrumentedInterceptor(registry, tracer, correlation)
 
-    classpath = configurations.detachedConfiguration(
-        dependencies.create("com.sun.xml.ws:jaxws-tools:4.0.3")
-    )
-    // Aqui é o main certo
-    mainClass.set("com.sun.tools.ws.WsImport")
+      val ctx = mockk<MethodInvocationContext<Any, Any>>()
+      val meta = mockk<AnnotationMetadata>()
+      val returnType = mockk<ReturnType<Any>>()
 
-    args(
-        "-d", genDir.absolutePath,
-        "-Xnocompile",
-        wsdl.absolutePath
-    )
-}
-```
+      every { meta.stringValue(Instrumented::class.java, "operation") } returns Optional.of("order.process")
+      every { meta.stringValue(Instrumented::class.java, "id") } returns Optional.of("orderId")
+      every { meta.booleanValue(Instrumented::class.java, "includeIdInMetric") } returns Optional.of(true)
+      every { meta.booleanValue(Instrumented::class.java, "recordErrors") } returns Optional.of(true)
+
+      every { ctx.annotationMetadata } returns meta
+      every { ctx.executableMethod } returns mockk {
+        every { argumentNames } returns arrayOf("orderId")
+      }
+      every { ctx.parameterValues } returns arrayOf<Any>("id-123")
+      every { returnType.type } returns Boolean::class.java
+      every { ctx.returnType } returns returnType
+      every { ctx.proceed() } returns true
+
+      val result = interceptor.intercept(ctx)
+      result shouldBe true
+
+      // counters
+      totalCounter("order.process.count").toInt().shouldBeEqualTo(1)
+      // timer exists (at least recorded once)
+      registry.find("order.process.time").timers().size shouldBeGreaterThan 0
+
+      verify { span.setTag("order.process.id", "id-123") }
+      verify { span.setTag("correlation_id", "corr-1") }
+    }
+  }
+
+  describe("InstrumentedInterceptor - sync failure") {
+    it("records error counters and tags span and logs error") {
+      val correlation = object : CorrelationIdContext { override val id: String? = null }
+      val interceptor = InstrumentedInterceptor(registry, tracer, correlation)
+
+      val ctx = mockk<MethodInvocationContext<Any, Any>>()
+      val meta = mockk<AnnotationMetadata>()
+      val returnType = mockk<ReturnType<Any>>()
+
+      every { meta.stringValue(Instrumented::class.java, "operation") } returns Optional.of("order.process")
+      every { meta.stringValue(Instrumented::class.java, "id") } returns Optional.empty()
+      every { meta.booleanValue(Instrumented::class.java, "includeIdInMetric") } returns Optional.of(false)
+      every { meta.booleanValue(Instrumented::class.java, "recordErrors") } returns Optional.of(true)
+
+      every { ctx.annotationMetadata } returns meta
+      every { ctx.executableMethod } returns mockk {
+        every { argumentNames } returns arrayOf<String>()
+      }
+      every { ctx.parameterValues } returns arrayOf<Any>()
+      every { returnType.type } returns Boolean::class.java
+      every { ctx.returnType } returns returnType
+      every { ctx.proceed() } throws IllegalStateException("boom")
+
+      shouldThrow<IllegalStateException> { interceptor.intercept(ctx) }
+
+      totalCounter("order.process.count").toInt().shouldBeEqualTo(1) // error recorded
+      // error breakdown counter also incremented
+      registry.find("order.process.errors").counters().sumOf { it.count() }.toInt().shouldBeEqualTo(1)
+
+      verify { span.setTag("error", true) }
+      verify { span.setTag("order.process.error_type", "IllegalStateException") }
+      verify { span.log(match<Map<String, String>> { it["error.kind"] == "IllegalStateException" }) }
+    }
+  }
+
+  describe("InstrumentedInterceptor - async success") {
+    it("handles CompletionStage success and records metrics after completion") {
+      val correlation = object : CorrelationIdContext { override val id: String? = "corr-async" }
+      val interceptor = InstrumentedInterceptor(registry, tracer, correlation)
+
+      val ctx = mockk<MethodInvocationContext<Any, Any>>()
+      val meta = mockk<AnnotationMetadata>()
+      val returnType = mockk<ReturnType<Any>>()
+
+      every { meta.stringValue(Instrumented::class.java, "operation") } returns Optional.of("order.async")
+      every { meta.stringValue(Instrumented::class.java, "id") } returns Optional.of("orderId")
+      every { meta.booleanValue(Instrumented::class.java, "includeIdInMetric") } returns Optional.of(true)
+      every { meta.booleanValue(Instrumented::class.java, "recordErrors") } returns Optional.of(true)
+
+      every { ctx.annotationMetadata } returns meta
+      every { ctx.executableMethod } returns mockk {
+        every { argumentNames } returns arrayOf("orderId")
+      }
+      every { ctx.parameterValues } returns arrayOf<Any>("async-1")
+      every { returnType.type } returns CompletionStage::class.java
+      every { ctx.returnType } returns returnType
+
+      val future = CompletableFuture.completedFuture(true)
+      every { ctx.proceed() } returns future
+
+      val returned = interceptor.intercept(ctx) as CompletionStage<*>
+      // ensure completion handlers ran
+      eventually(Duration.seconds(1)) {
+        totalCounter("order.async.count").toInt().shouldBeEqualTo(1)
+      }
+
+      verify { span.setTag("order.async.id", "async-1") }
+      verify { span.setTag("correlation_id", "corr-async") }
+    }
+  }
+
+  describe("InstrumentedInterceptor - async failure") {
+    it("handles CompletionStage exceptional completion and records error metrics") {
+      val correlation = object : CorrelationIdContext { override val id: String? = null }
+      val interceptor = InstrumentedInterceptor(registry, tracer, correlation)
+
+      val ctx = mockk<MethodInvocationContext<Any, Any>>()
+      val meta = mockk<AnnotationMetadata>()
+      val returnType = mockk<ReturnType<Any>>()
+
+      every { meta.stringValue(Instrumented::class.java, "operation") } returns Optional.of("order.async")
+      every { meta.stringValue(Instrumented::class.java, "id") } returns Optional.of("orderId")
+      every { meta.booleanValue(Instrumented::class.java, "includeIdInMetric") } returns Optional.of(false)
+      every { meta.booleanValue(Instrumented::class.java, "recordErrors") } returns Optional.of(true)
+
+      every { ctx.annotationMetadata } returns meta
+      every { ctx.executableMethod } returns mockk {
+        every { argumentNames } returns arrayOf("orderId")
+      }
+      every { ctx.parameterValues } returns arrayOf<Any>("async-2")
+      every { returnType.type } returns CompletionStage::class.java
+      every { ctx.returnType } returns returnType
+
+      val future = CompletableFuture<Boolean>()
+      every { ctx.proceed() } returns future
+
+      val returned = interceptor.intercept(ctx) as CompletionStage<*>
+      future.completeExceptionally(RuntimeException("async boom"))
+
+      eventually(Duration.seconds(1)) {
+        totalCounter("order.async.count").toInt().shouldBeEqualTo(1) // error incremented
+        registry.find("order.async.errors").counters().sumOf { it.count() }.toInt().shouldBeEqualTo(1)
+      }
+
+      verify { span.setTag("error", true) }
+      verify { span.setTag("order.async.error_type", "RuntimeException") }
+    }
+  }
+})
