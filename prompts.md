@@ -1,3 +1,4 @@
+```kotlin
 // InstrumentedInterceptorTest.kt
 package com.company.metrics
 
@@ -192,3 +193,4 @@ class InstrumentedInterceptorTest : DescribeSpec({
     }
   }
 })
+```
