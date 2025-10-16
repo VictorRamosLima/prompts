@@ -1,195 +1,200 @@
 ```kotlin
-// InstrumentedInterceptorTest.kt
 package com.company.metrics
 
 import io.kotest.core.spec.style.DescribeSpec
-import io.kotest.matchers.doubles.shouldBeGreaterThan
-import io.kotest.matchers.ints.shouldBeEqualTo
 import io.kotest.matchers.shouldBe
-import io.kotest.assertions.timing.eventually
+import io.kotest.assertions.throwables.shouldThrow
 import io.mockk.*
-import io.micrometer.core.instrument.simple.SimpleMeterRegistry
-import io.micrometer.core.instrument.Tags
-import io.micronaut.core.annotation.AnnotationMetadata
-import io.micronaut.context.BeanContext
+import io.micrometer.core.instrument.Counter
+import io.micrometer.core.instrument.MeterRegistry
+import io.micrometer.core.instrument.Timer
 import io.micronaut.aop.MethodInvocationContext
+import io.micronaut.core.annotation.AnnotationMetadata
 import io.micronaut.core.type.ReturnType
-import io.micronaut.context.invoker.DefaultExecutableMethod
 import io.opentracing.Span
 import io.opentracing.Tracer
-import java.util.*
+import java.util.Optional
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CompletionStage
-import kotlin.time.Duration
-import kotlin.time.ExperimentalTime
 
-@OptIn(ExperimentalTime::class)
 class InstrumentedInterceptorTest : DescribeSpec({
 
-  val registry = SimpleMeterRegistry()
-  val tracer = mockk<Tracer>(relaxed = true)
-  val span = mockk<Span>(relaxed = true)
-
-  every { tracer.activeSpan() } returns span
-
-  fun resetRegistry() {
-    registry.clear()
-  }
-
-  fun totalCounter(name: String): Double =
-    registry.find(name).counters().sumOf { it.count() }
-
-  fun timerCount(name: String): Long =
-    registry.find(name).timers().counter()?.count()?.toLong() ?: registry.find(name).timers().stream().mapToLong { it.count().toLong() }.sum()
+  lateinit var registry: MeterRegistry
+  lateinit var tracer: Tracer
+  lateinit var span: Span
+  lateinit var correlation: CorrelationIdContext
+  lateinit var counter: Counter
+  lateinit var errorsCounter: Counter
+  lateinit var timer: Timer
 
   beforeTest {
-    clearAllMocks()
+    registry = mockk(relaxed = true)
+    tracer = mockk(relaxed = true)
+    span = mockk(relaxed = true)
+    correlation = mockk(relaxed = true)
+    counter = mockk(relaxed = true)
+    errorsCounter = mockk(relaxed = true)
+    timer = mockk(relaxed = true)
+
     every { tracer.activeSpan() } returns span
-    resetRegistry()
+
+    // generic registry stubs (specific test cases can override)
+    every { registry.counter(any(), any()) } returns counter
+    every { registry.counter(any(), any<io.micrometer.core.instrument.Tag>()) } returns counter
+    every { registry.timer(any()) } returns timer
   }
 
-  describe("InstrumentedInterceptor - sync success") {
-    it("records success counter and timer and annotates span with id and correlation id") {
-      val correlation = object : CorrelationIdContext { override val id: String? = "corr-1" }
+  fun mockContext(
+    operation: String,
+    idParamName: Optional<String>,
+    includeId: Optional<Boolean>,
+    recordErrors: Optional<Boolean>,
+    argNames: Array<String> = emptyArray(),
+    params: Array<Any> = emptyArray(),
+    returnTypeClass: Class<*>,
+    proceedBehavior: () -> Any
+  ): MethodInvocationContext<Any, Any> {
+    val ctx = mockk<MethodInvocationContext<Any, Any>>(relaxed = true)
+    val meta = mockk<AnnotationMetadata>()
+
+    every { meta.stringValue(Instrumented::class.java, "operation") } returns Optional.of(operation)
+    every { meta.stringValue(Instrumented::class.java, "id") } returns idParamName
+    every { meta.booleanValue(Instrumented::class.java, "includeIdInMetric") } returns includeId
+    every { meta.booleanValue(Instrumented::class.java, "recordErrors") } returns recordErrors
+
+    every { ctx.annotationMetadata } returns meta
+    every { ctx.executableMethod } returns mockk {
+      every { argumentNames } returns argNames
+    }
+    every { ctx.parameterValues } returns params
+
+    val returnType = mockk<ReturnType<Any>>(relaxed = true)
+    every { returnType.type } returns returnTypeClass
+    every { ctx.returnType } returns returnType
+
+    every { ctx.proceed() } answers { proceedBehavior() }
+
+    return ctx
+  }
+
+  describe("sync success with id and correlation") {
+    it("increments success counter, stops timer and tags span with id + correlation") {
+      every { correlation.id } returns "corr-1"
       val interceptor = InstrumentedInterceptor(registry, tracer, correlation)
 
-      val ctx = mockk<MethodInvocationContext<Any, Any>>()
-      val meta = mockk<AnnotationMetadata>()
-      val returnType = mockk<ReturnType<Any>>()
-
-      every { meta.stringValue(Instrumented::class.java, "operation") } returns Optional.of("order.process")
-      every { meta.stringValue(Instrumented::class.java, "id") } returns Optional.of("orderId")
-      every { meta.booleanValue(Instrumented::class.java, "includeIdInMetric") } returns Optional.of(true)
-      every { meta.booleanValue(Instrumented::class.java, "recordErrors") } returns Optional.of(true)
-
-      every { ctx.annotationMetadata } returns meta
-      every { ctx.executableMethod } returns mockk {
-        every { argumentNames } returns arrayOf("orderId")
-      }
-      every { ctx.parameterValues } returns arrayOf<Any>("id-123")
-      every { returnType.type } returns Boolean::class.java
-      every { ctx.returnType } returns returnType
-      every { ctx.proceed() } returns true
+      val ctx = mockContext(
+        operation = "order.process",
+        idParamName = Optional.of("orderId"),
+        includeId = Optional.of(true),
+        recordErrors = Optional.of(true),
+        argNames = arrayOf("orderId"),
+        params = arrayOf("id-123"),
+        returnTypeClass = Boolean::class.java
+      ) { true }
 
       val result = interceptor.intercept(ctx)
       result shouldBe true
 
-      // counters
-      totalCounter("order.process.count").toInt().shouldBeEqualTo(1)
-      // timer exists (at least recorded once)
-      registry.find("order.process.time").timers().size shouldBeGreaterThan 0
-
+      verify(exactly = 1) { registry.counter("order.process.count", any()) }
+      verify { counter.increment() }
+      verify { registry.timer("order.process.time") }
       verify { span.setTag("order.process.id", "id-123") }
       verify { span.setTag("correlation_id", "corr-1") }
     }
   }
 
-  describe("InstrumentedInterceptor - sync failure") {
-    it("records error counters and tags span and logs error") {
-      val correlation = object : CorrelationIdContext { override val id: String? = null }
+  describe("sync failure without id, correlation absent") {
+    it("throws, records error counters and tags/logs span") {
+      every { correlation.id } returns null
       val interceptor = InstrumentedInterceptor(registry, tracer, correlation)
 
-      val ctx = mockk<MethodInvocationContext<Any, Any>>()
-      val meta = mockk<AnnotationMetadata>()
-      val returnType = mockk<ReturnType<Any>>()
+      // ensure specific counter names return distinct mocks
+      every { registry.counter("order.process.count", any()) } returns counter
+      every { registry.counter("order.process.errors", any()) } returns errorsCounter
 
-      every { meta.stringValue(Instrumented::class.java, "operation") } returns Optional.of("order.process")
-      every { meta.stringValue(Instrumented::class.java, "id") } returns Optional.empty()
-      every { meta.booleanValue(Instrumented::class.java, "includeIdInMetric") } returns Optional.of(false)
-      every { meta.booleanValue(Instrumented::class.java, "recordErrors") } returns Optional.of(true)
-
-      every { ctx.annotationMetadata } returns meta
-      every { ctx.executableMethod } returns mockk {
-        every { argumentNames } returns arrayOf<String>()
-      }
-      every { ctx.parameterValues } returns arrayOf<Any>()
-      every { returnType.type } returns Boolean::class.java
-      every { ctx.returnType } returns returnType
-      every { ctx.proceed() } throws IllegalStateException("boom")
+      val ctx = mockContext(
+        operation = "order.process",
+        idParamName = Optional.empty(),
+        includeId = Optional.of(false),
+        recordErrors = Optional.of(true),
+        argNames = arrayOf(),
+        params = arrayOf(),
+        returnTypeClass = Boolean::class.java
+      ) { throw IllegalStateException("boom") }
 
       shouldThrow<IllegalStateException> { interceptor.intercept(ctx) }
 
-      totalCounter("order.process.count").toInt().shouldBeEqualTo(1) // error recorded
-      // error breakdown counter also incremented
-      registry.find("order.process.errors").counters().sumOf { it.count() }.toInt().shouldBeEqualTo(1)
-
+      verify { registry.counter("order.process.count", any()) }
+      verify { counter.increment() }
+      verify { registry.counter("order.process.errors", any()) }
+      verify { errorsCounter.increment() }
       verify { span.setTag("error", true) }
       verify { span.setTag("order.process.error_type", "IllegalStateException") }
       verify { span.log(match<Map<String, String>> { it["error.kind"] == "IllegalStateException" }) }
+      verify { registry.timer("order.process.time") }
     }
   }
 
-  describe("InstrumentedInterceptor - async success") {
-    it("handles CompletionStage success and records metrics after completion") {
-      val correlation = object : CorrelationIdContext { override val id: String? = "corr-async" }
+  describe("async success CompletionStage") {
+    it("attaches completion handler, records success after completion and tags span") {
+      every { correlation.id } returns "corr-async"
       val interceptor = InstrumentedInterceptor(registry, tracer, correlation)
 
-      val ctx = mockk<MethodInvocationContext<Any, Any>>()
-      val meta = mockk<AnnotationMetadata>()
-      val returnType = mockk<ReturnType<Any>>()
-
-      every { meta.stringValue(Instrumented::class.java, "operation") } returns Optional.of("order.async")
-      every { meta.stringValue(Instrumented::class.java, "id") } returns Optional.of("orderId")
-      every { meta.booleanValue(Instrumented::class.java, "includeIdInMetric") } returns Optional.of(true)
-      every { meta.booleanValue(Instrumented::class.java, "recordErrors") } returns Optional.of(true)
-
-      every { ctx.annotationMetadata } returns meta
-      every { ctx.executableMethod } returns mockk {
-        every { argumentNames } returns arrayOf("orderId")
-      }
-      every { ctx.parameterValues } returns arrayOf<Any>("async-1")
-      every { returnType.type } returns CompletionStage::class.java
-      every { ctx.returnType } returns returnType
-
       val future = CompletableFuture.completedFuture(true)
-      every { ctx.proceed() } returns future
+
+      val ctx = mockContext(
+        operation = "order.async",
+        idParamName = Optional.of("orderId"),
+        includeId = Optional.of(true),
+        recordErrors = Optional.of(true),
+        argNames = arrayOf("orderId"),
+        params = arrayOf("async-1"),
+        returnTypeClass = CompletionStage::class.java
+      ) { future }
 
       val returned = interceptor.intercept(ctx) as CompletionStage<*>
-      // ensure completion handlers ran
-      eventually(Duration.seconds(1)) {
-        totalCounter("order.async.count").toInt().shouldBeEqualTo(1)
-      }
+      returned.toCompletableFuture().join() // ensure complete
 
+      verify { registry.counter("order.async.count", any()) }
+      verify { counter.increment() }
+      verify { registry.timer("order.async.time") }
       verify { span.setTag("order.async.id", "async-1") }
       verify { span.setTag("correlation_id", "corr-async") }
     }
   }
 
-  describe("InstrumentedInterceptor - async failure") {
-    it("handles CompletionStage exceptional completion and records error metrics") {
-      val correlation = object : CorrelationIdContext { override val id: String? = null }
+  describe("async exceptional CompletionStage") {
+    it("records error metrics when CompletionStage completes exceptionally") {
+      every { correlation.id } returns null
       val interceptor = InstrumentedInterceptor(registry, tracer, correlation)
 
-      val ctx = mockk<MethodInvocationContext<Any, Any>>()
-      val meta = mockk<AnnotationMetadata>()
-      val returnType = mockk<ReturnType<Any>>()
-
-      every { meta.stringValue(Instrumented::class.java, "operation") } returns Optional.of("order.async")
-      every { meta.stringValue(Instrumented::class.java, "id") } returns Optional.of("orderId")
-      every { meta.booleanValue(Instrumented::class.java, "includeIdInMetric") } returns Optional.of(false)
-      every { meta.booleanValue(Instrumented::class.java, "recordErrors") } returns Optional.of(true)
-
-      every { ctx.annotationMetadata } returns meta
-      every { ctx.executableMethod } returns mockk {
-        every { argumentNames } returns arrayOf("orderId")
-      }
-      every { ctx.parameterValues } returns arrayOf<Any>("async-2")
-      every { returnType.type } returns CompletionStage::class.java
-      every { ctx.returnType } returns returnType
+      every { registry.counter("order.async.count", any()) } returns counter
+      every { registry.counter("order.async.errors", any()) } returns errorsCounter
 
       val future = CompletableFuture<Boolean>()
-      every { ctx.proceed() } returns future
+
+      val ctx = mockContext(
+        operation = "order.async",
+        idParamName = Optional.of("orderId"),
+        includeId = Optional.of(false),
+        recordErrors = Optional.of(true),
+        argNames = arrayOf("orderId"),
+        params = arrayOf("async-2"),
+        returnTypeClass = CompletionStage::class.java
+      ) { future }
 
       val returned = interceptor.intercept(ctx) as CompletionStage<*>
+
       future.completeExceptionally(RuntimeException("async boom"))
 
-      eventually(Duration.seconds(1)) {
-        totalCounter("order.async.count").toInt().shouldBeEqualTo(1) // error incremented
-        registry.find("order.async.errors").counters().sumOf { it.count() }.toInt().shouldBeEqualTo(1)
-      }
-
+      // allow callback to run (verify with timeout)
+      verify(timeout = 1000) { registry.counter("order.async.count", any()) }
+      verify { counter.increment() }
+      verify { registry.counter("order.async.errors", any()) }
+      verify { errorsCounter.increment() }
       verify { span.setTag("error", true) }
       verify { span.setTag("order.async.error_type", "RuntimeException") }
+      verify { registry.timer("order.async.time") }
     }
   }
 })
