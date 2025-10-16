@@ -1,50 +1,147 @@
 ```kotlin
-import io.micrometer.core.annotation.Counted
-import io.micrometer.core.annotation.Timed
-import io.micrometer.core.instrument.MeterRegistry
-import io.micronaut.aop.InterceptorBean
-import io.micronaut.aop.MethodInterceptor
-import io.micronaut.aop.MethodInvocationContext
-import io.micronaut.core.annotation.AnnotationValue
-import jakarta.inject.Singleton
-import org.slf4j.LoggerFactory
-
 @Singleton
-@InterceptorBean(OrderProcessMetric::class)
-class OrderProcessMetricInterceptor(
-    private val meterRegistry: MeterRegistry
+class InstrumentedInterceptor(
+    private val registry: MeterRegistry,
+    private val tracer: Tracer,
+    private val correlationIdContext: CorrelationIdContext,
 ) : MethodInterceptor<Any, Any> {
 
-    private val log = LoggerFactory.getLogger(javaClass)
-
     override fun intercept(context: MethodInvocationContext<Any, Any>): Any? {
-        val annotation = context.getAnnotation(OrderProcessMetric::class.java)
-        val prefix = annotation?.getValue(String::class.java).orElse("order.process")
-
-        // Cria as anotações dinâmicas
-        val timedAnnotation = AnnotationValue.builder<Timed>("$prefix.time").build()
-        val countedAnnotation = AnnotationValue.builder<Counted>("$prefix.count").build()
-
-        // Aplica lógica do @Timed
-        val timer = meterRegistry.timer("$prefix.time")
-        val sample = timer.start()
-
-        // Aplica lógica do @Counted
-        val counter = meterRegistry.counter("$prefix.count")
-        counter.increment()
-
-        // Simula o @NewSpan (adaptar conforme sua implementação de tracing)
-        log.debug("Iniciando span: $prefix.span")
-        // Adicione aqui a lógica específica do seu tracer (ex: Brave/OpenTelemetry)
+        val metadata = context.annotationMetadata
+        val config = InstrumentedConfig.from(metadata)
+        val idValue = config.extractId(context)
 
         return try {
-            context.proceed()
+            when (val result = context.proceed()) {
+                is CompletionStage<*> -> handleAsync(result, config, idValue)
+                else -> handleSync(result, config, idValue)
+            }
         } catch (e: Exception) {
-            log.error("Erro no processamento", e)
+            handleFailure(e, config, idValue)
             throw e
+        }
+    }
+
+    private fun handleAsync(
+        result: CompletionStage<*>,
+        config: InstrumentedConfig,
+        idValue: String?
+    ): CompletionStage<*> {
+        val sample = Timer.start(registry)
+        return result.whenComplete { _, throwable ->
+            if (throwable != null) {
+                handleFailure(throwable, config, idValue)
+            } else {
+                recordSuccess(config.operationName, idValue)
+                annotateSpanSuccess(config.operationName, idValue)
+            }
+            sample.stop(registry.timer("${config.operationName}.time"))
+        }
+    }
+
+    private fun <T> handleSync(result: T, config: InstrumentedConfig, idValue: String?): T {
+        val sample = Timer.start(registry)
+        try {
+            recordSuccess(config.operationName, idValue)
+            annotateSpanSuccess(config.operationName, idValue)
+            return result
         } finally {
-            sample.stop(timer)
-            log.debug("Finalizando span: $prefix.span")
+            sample.stop(registry.timer("${config.operationName}.time"))
+        }
+    }
+
+    private fun handleFailure(
+        throwable: Throwable,
+        config: InstrumentedConfig,
+        idValue: String?
+    ) {
+        if (config.recordErrors) {
+            recordError(throwable, config.operationName, idValue)
+        }
+        annotateSpanError(throwable, config.operationName, idValue)
+    }
+
+    private fun recordSuccess(operationName: String, idValue: String?) {
+        registry.counter("${operationName}.count", buildTags("success", idValue)).increment()
+    }
+
+    private fun recordError(throwable: Throwable, operationName: String, idValue: String?) {
+        val errorType = throwable::class.simpleName ?: "UnknownError"
+        
+        val errorTags = buildTags("error", idValue, "error_type" to errorType)
+        registry.counter("${operationName}.count", errorTags).increment()
+        registry.counter("${operationName}.errors", Tags.of("error_type", errorType)).increment()
+    }
+
+    private fun annotateSpanSuccess(operationName: String, idValue: String?) {
+        tracer.activeSpan()?.apply {
+            idValue?.let { setTag("${operationName}.id", sanitizeId(it)) }
+            correlationIdContext.id?.let { setTag("correlation_id", it) }
+        }
+    }
+
+    private fun annotateSpanError(throwable: Throwable, operationName: String, idValue: String?) {
+        tracer.activeSpan()?.apply {
+            setTag("error", true)
+            setTag("${operationName}.error_type", throwable::class.simpleName ?: "UnknownError")
+            correlationIdContext.id?.let { setTag("correlation_id", it) }
+            log(errorDetails(throwable, operationName))
+        }
+    }
+
+    private fun buildTags(status: String, idValue: String?, vararg extraTags: Pair<String, String>): Tags {
+        val tags = mutableListOf<String>().apply {
+            addAll(listOf("status", status))
+            idValue?.let {
+                addAll(listOf("id", sanitizeId(it)))
+            }
+            correlationIdContext.id?.let {
+                addAll(listOf("correlation_id", it))
+            }
+            extraTags.forEach { (key, value) ->
+                addAll(listOf(key, value))
+            }
+        }
+        return Tags.of(*tags.toTypedArray())
+    }
+
+    private fun sanitizeId(idValue: String): String = idValue.take(32)
+    
+    private fun errorDetails(throwable: Throwable, operationName: String): Map<String, String> =
+        mutableMapOf<String, String>().apply {
+            put("operation.name", operationName)
+            put("event", "error")
+            put("error.kind", throwable::class.simpleName ?: "UnknownError")
+            put("message", throwable.message ?: "An unknown error occurred during $operationName flow")
+            correlationIdContext.id?.let { put("correlation_id", it) }
+        }.toMap()
+
+    private data class InstrumentedConfig(
+        val operationName: String,
+        val idName: String,
+        val includeIdInMetric: Boolean,
+        val recordErrors: Boolean
+    ) {
+        fun extractId(context: MethodInvocationContext<*, *>): String? = when {
+            !includeIdInMetric -> null
+            idName.isNotEmpty() -> extractNamedId(context, idName)
+            else -> context.parameterValues.firstOrNull()?.toString()
+        }
+
+        private fun extractNamedId(context: MethodInvocationContext<*, *>, idName: String): String? =
+            context.executableMethod.argumentNames
+                .indexOf(idName)
+                .takeIf { it >= 0 }
+                ?.let { context.parameterValues.getOrNull(it)?.toString() }
+
+        companion object {
+            fun from(metadata: AnnotationMetadata): InstrumentedConfig =
+                InstrumentedConfig(
+                    operationName = metadata.stringValue(Instrumented::class.java, "operation").orElse("operation"),
+                    idName = metadata.stringValue(Instrumented::class.java, "id").orElse(""),
+                    includeIdInMetric = metadata.booleanValue(Instrumented::class.java, "includeIdInMetric").orElse(false),
+                    recordErrors = metadata.booleanValue(Instrumented::class.java, "recordErrors").orElse(true)
+                )
         }
     }
 }
