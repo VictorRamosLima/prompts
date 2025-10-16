@@ -1,4 +1,54 @@
 ```kotlin
+import io.micrometer.core.annotation.Counted
+import io.micrometer.core.annotation.Timed
+import io.micrometer.core.instrument.MeterRegistry
+import io.micronaut.aop.InterceptorBean
+import io.micronaut.aop.MethodInterceptor
+import io.micronaut.aop.MethodInvocationContext
+import io.micronaut.core.annotation.AnnotationValue
+import jakarta.inject.Singleton
+import org.slf4j.LoggerFactory
+
+@Singleton
+@InterceptorBean(OrderProcessMetric::class)
+class OrderProcessMetricInterceptor(
+    private val meterRegistry: MeterRegistry
+) : MethodInterceptor<Any, Any> {
+
+    private val log = LoggerFactory.getLogger(javaClass)
+
+    override fun intercept(context: MethodInvocationContext<Any, Any>): Any? {
+        val annotation = context.getAnnotation(OrderProcessMetric::class.java)
+        val prefix = annotation?.getValue(String::class.java).orElse("order.process")
+
+        // Cria as anotações dinâmicas
+        val timedAnnotation = AnnotationValue.builder<Timed>("$prefix.time").build()
+        val countedAnnotation = AnnotationValue.builder<Counted>("$prefix.count").build()
+
+        // Aplica lógica do @Timed
+        val timer = meterRegistry.timer("$prefix.time")
+        val sample = timer.start()
+
+        // Aplica lógica do @Counted
+        val counter = meterRegistry.counter("$prefix.count")
+        counter.increment()
+
+        // Simula o @NewSpan (adaptar conforme sua implementação de tracing)
+        log.debug("Iniciando span: $prefix.span")
+        // Adicione aqui a lógica específica do seu tracer (ex: Brave/OpenTelemetry)
+
+        return try {
+            context.proceed()
+        } catch (e: Exception) {
+            log.error("Erro no processamento", e)
+            throw e
+        } finally {
+            sample.stop(timer)
+            log.debug("Finalizando span: $prefix.span")
+        }
+    }
+}
+
 package com.company.metrics
 
 import io.kotest.core.spec.style.DescribeSpec
