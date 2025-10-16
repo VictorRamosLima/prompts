@@ -1,4 +1,496 @@
 ```kotlin
+package com.company.metrics
+
+import io.kotest.core.spec.style.BehaviorSpec
+import io.kotest.matchers.collections.shouldContainExactly
+import io.kotest.matchers.shouldBe
+import io.kotest.matchers.types.shouldBeInstanceOf
+import io.mockk.*
+import io.micrometer.core.instrument.Counter
+import io.micrometer.core.instrument.MeterRegistry
+import io.micrometer.core.instrument.Tags
+import io.micrometer.core.instrument.Timer
+import io.micronaut.aop.MethodInvocationContext
+import org.opentracing.Span
+import org.opentracing.Tracer
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.CompletionStage
+import kotlin.coroutines.Continuation
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
+import kotlin.coroutines.suspendCoroutine
+
+class InstrumentedInterceptorTest : BehaviorSpec({
+
+    val mockRegistry = mockk<MeterRegistry>()
+    val mockTracer = mockk<Tracer>()
+    val mockCorrelationIdContext = mockk<CorrelationIdContext>()
+    val mockSpan = mockk<Span>()
+    val mockTimer = mockk<Timer>()
+    val mockCounter = mockk<Counter>()
+
+    val interceptor = InstrumentedInterceptor(mockRegistry, mockTracer, mockCorrelationIdContext)
+
+    fun setupCommonMocks() {
+        every { mockTracer.activeSpan() } returns mockSpan
+        every { mockSpan.setTag(any<String>(), any()) } just Runs
+        every { mockSpan.log(any<Map<String, String>>()) } just Runs
+        every { mockRegistry.timer(any(), any()) } returns mockTimer
+        every { mockRegistry.counter(any(), any()) } returns mockCounter
+        every { mockCounter.increment() } just Runs
+        every { mockCorrelationIdContext.id } returns "test-correlation-id"
+    }
+
+    beforeEach {
+        clearAllMocks()
+        setupCommonMocks()
+    }
+
+    given("InstrumentedInterceptor configuration") {
+        
+        `when`("extracting configuration from annotation metadata") {
+            val metadata = mockk<AnnotationMetadata>()
+            
+            then("should extract all values correctly") {
+                every { metadata.stringValue(Instrumented::class.java, "operation") } returns Optional.of("testOperation")
+                every { metadata.stringValue(Instrumented::class.java, "id") } returns Optional.of("testId")
+                every { metadata.booleanValue(Instrumented::class.java, "includeIdInMetric") } returns Optional.of(true)
+                every { metadata.booleanValue(Instrumented::class.java, "recordErrors") } returns Optional.of(false)
+
+                val config = InstrumentedInterceptor.InstrumentedConfig.from(metadata)
+
+                config.operationName shouldBe "testOperation"
+                config.idName shouldBe "testId"
+                config.includeIdInMetric shouldBe true
+                config.recordErrors shouldBe false
+            }
+
+            then("should use default values when not specified") {
+                every { metadata.stringValue(Instrumented::class.java, "operation") } returns Optional.empty()
+                every { metadata.stringValue(Instrumented::class.java, "id") } returns Optional.empty()
+                every { metadata.booleanValue(Instrumented::class.java, "includeIdInMetric") } returns Optional.empty()
+                every { metadata.booleanValue(Instrumented::class.java, "recordErrors") } returns Optional.empty()
+
+                val config = InstrumentedInterceptor.InstrumentedConfig.from(metadata)
+
+                config.operationName shouldBe "operation"
+                config.idName shouldBe ""
+                config.includeIdInMetric shouldBe false
+                config.recordErrors shouldBe true
+            }
+        }
+    }
+
+    given("synchronous method execution") {
+        val context = mockk<MethodInvocationContext<Any, Any>>()
+        val metadata = mockk<AnnotationMetadata>()
+        
+        beforeEach {
+            every { context.annotationMetadata } returns metadata
+            every { metadata.stringValue(Instrumented::class.java, "operation") } returns Optional.of("syncOp")
+            every { metadata.stringValue(Instrumented::class.java, "id") } returns Optional.empty()
+            every { metadata.booleanValue(Instrumented::class.java, "includeIdInMetric") } returns Optional.of(false)
+            every { metadata.booleanValue(Instrumented::class.java, "recordErrors") } returns Optional.of(true)
+            every { context.returnType } returns mockk {
+                every { type } returns String::class.java
+            }
+        }
+
+        `when`("method executes successfully") {
+            val sampleSlot = slot<Timer.Sample>()
+            val timerTagsSlot = slot<Tags>()
+            val counterTagsSlot = slot<Tags>()
+            
+            then("should record success metrics and annotate span") {
+                every { context.proceed() } returns "success-result"
+                mockkStatic(Timer.Sample::class)
+                val mockSample = mockk<Timer.Sample>()
+                every { Timer.start(registry = mockRegistry) } returns mockSample
+                every { mockSample.stop(mockTimer) } just Runs
+
+                val result = interceptor.intercept(context)
+
+                result shouldBe "success-result"
+
+                verify {
+                    Timer.start(registry = mockRegistry)
+                    mockSample.stop(mockTimer)
+                    mockRegistry.counter("syncOp.count", capture(counterTagsSlot))
+                    mockCounter.increment()
+                    mockSpan.setTag("syncOp.correlation_id", "test-correlation-id")
+                }
+
+                counterTagsSlot.captured shouldBe Tags.of(
+                    "status", "success",
+                    "correlation_id", "test-correlation-id"
+                )
+            }
+        }
+
+        `when`("method throws exception") {
+            val exception = RuntimeException("Sync operation failed")
+            val errorTagsSlot = slot<Tags>()
+            
+            then("should record error metrics and annotate span with error") {
+                every { context.proceed() } throws exception
+
+                shouldThrow<RuntimeException> {
+                    interceptor.intercept(context)
+                }
+
+                verify {
+                    mockRegistry.counter("syncOp.count", capture(errorTagsSlot))
+                    mockRegistry.counter("syncOp.errors", Tags.of("error_type", "RuntimeException"))
+                    mockCounter.increment()
+                    mockSpan.setTag("syncOp.error", true)
+                    mockSpan.setTag("syncOp.error_type", "RuntimeException")
+                    mockSpan.log(withArg { logMap ->
+                        logMap["operation.name"] shouldBe "syncOp"
+                        logMap["event"] shouldBe "error"
+                        logMap["error.kind"] shouldBe "RuntimeException"
+                        logMap["message"] shouldBe "Sync operation failed"
+                        logMap["correlation_id"] shouldBe "test-correlation-id"
+                    })
+                }
+
+                errorTagsSlot.captured shouldBe Tags.of(
+                    "status", "error",
+                    "correlation_id", "test-correlation-id",
+                    "error_type", "RuntimeException"
+                )
+            }
+        }
+    }
+
+    given("asynchronous method execution with CompletionStage") {
+        val context = mockk<MethodInvocationContext<Any, Any>>()
+        val metadata = mockk<AnnotationMetadata>()
+        val completableFuture = CompletableFuture<String>()
+        
+        beforeEach {
+            every { context.annotationMetadata } returns metadata
+            every { metadata.stringValue(Instrumented::class.java, "operation") } returns Optional.of("asyncOp")
+            every { metadata.stringValue(Instrumented::class.java, "id") } returns Optional.empty()
+            every { metadata.booleanValue(Instrumented::class.java, "includeIdInMetric") } returns Optional.of(false)
+            every { metadata.booleanValue(Instrumented::class.java, "recordErrors") } returns Optional.of(true)
+            every { context.returnType } returns mockk {
+                every { type } returns CompletionStage::class.java
+            }
+        }
+
+        `when`("CompletionStage completes successfully") {
+            then("should record success metrics when future completes") {
+                every { context.proceed() } returns completableFuture
+
+                val result = interceptor.intercept(context)
+
+                result.shouldBeInstanceOf<CompletionStage<*>>()
+
+                // Complete the future to trigger the callback
+                completableFuture.complete("async-success")
+
+                verify(timeout = 1000) {
+                    mockRegistry.counter("asyncOp.count", withArg { tags ->
+                        tags.stream().map { it.key to it.value }.toList() shouldContainExactly listOf(
+                            "status" to "success",
+                            "correlation_id" to "test-correlation-id"
+                        )
+                    })
+                    mockCounter.increment()
+                    mockSpan.setTag("asyncOp.correlation_id", "test-correlation-id")
+                }
+            }
+        }
+
+        `when`("CompletionStage completes with exception") {
+            then("should record error metrics when future fails") {
+                every { context.proceed() } returns completableFuture
+
+                val result = interceptor.intercept(context)
+
+                result.shouldBeInstanceOf<CompletionStage<*>>()
+
+                // Complete the future with exception to trigger error handling
+                val exception = RuntimeException("Async operation failed")
+                completableFuture.completeExceptionally(exception)
+
+                verify(timeout = 1000) {
+                    mockRegistry.counter("asyncOp.count", withArg { tags ->
+                        tags.stream().map { it.key to it.value }.toList() shouldContainExactly listOf(
+                            "status" to "error",
+                            "correlation_id" to "test-correlation-id",
+                            "error_type" to "RuntimeException"
+                        )
+                    })
+                    mockRegistry.counter("asyncOp.errors", Tags.of("error_type", "RuntimeException"))
+                    mockCounter.increment()
+                    mockSpan.setTag("asyncOp.error", true)
+                    mockSpan.setTag("asyncOp.error_type", "RuntimeException")
+                }
+            }
+        }
+    }
+
+    given("ID extraction logic") {
+        val context = mockk<MethodInvocationContext<Any, Any>>()
+        val metadata = mockk<AnnotationMetadata>()
+        
+        beforeEach {
+            every { context.annotationMetadata } returns metadata
+            every { metadata.stringValue(Instrumented::class.java, "operation") } returns Optional.of("idOp")
+            every { metadata.booleanValue(Instrumented::class.java, "recordErrors") } returns Optional.of(true)
+            every { context.proceed() } returns "result"
+            every { context.returnType } returns mockk {
+                every { type } returns String::class.java
+            }
+        }
+
+        `when`("includeIdInMetric is false") {
+            then("should not extract ID") {
+                every { metadata.stringValue(Instrumented::class.java, "id") } returns Optional.of("userId")
+                every { metadata.booleanValue(Instrumented::class.java, "includeIdInMetric") } returns Optional.of(false)
+
+                interceptor.intercept(context)
+
+                verify(exactly = 0) { 
+                    context.executableMethod 
+                    context.parameterValues 
+                }
+            }
+        }
+
+        `when`("includeIdInMetric is true and id name is specified") {
+            then("should extract ID by parameter name") {
+                every { metadata.stringValue(Instrumented::class.java, "id") } returns Optional.of("userId")
+                every { metadata.booleanValue(Instrumented::class.java, "includeIdInMetric") } returns Optional.of(true)
+                every { context.executableMethod } returns mockk {
+                    every { argumentNames } returns listOf("userId", "otherParam")
+                }
+                every { context.parameterValues } returns listOf("user-123", "other-value")
+
+                val tagsSlot = slot<Tags>()
+                interceptor.intercept(context)
+
+                verify {
+                    mockRegistry.counter("idOp.count", capture(tagsSlot))
+                    mockSpan.setTag("idOp.id", "user-123")
+                }
+
+                tagsSlot.captured.stream()
+                    .filter { it.key == "id" }
+                    .findFirst()
+                    .get()
+                    .value shouldBe "user-123"
+            }
+        }
+
+        `when`("includeIdInMetric is true and id name is empty") {
+            then("should extract first parameter as ID") {
+                every { metadata.stringValue(Instrumented::class.java, "id") } returns Optional.of("")
+                every { metadata.booleanValue(Instrumented::class.java, "includeIdInMetric") } returns Optional.of(true)
+                every { context.parameterValues } returns listOf("first-param-value", "second-param")
+
+                val tagsSlot = slot<Tags>()
+                interceptor.intercept(context)
+
+                verify {
+                    mockRegistry.counter("idOp.count", capture(tagsSlot))
+                    mockSpan.setTag("idOp.id", "first-param-value")
+                }
+
+                tagsSlot.captured.stream()
+                    .filter { it.key == "id" }
+                    .findFirst()
+                    .get()
+                    .value shouldBe "first-param-value"
+            }
+        }
+
+        `when`("ID value is too long") {
+            then("should sanitize ID to 32 characters") {
+                every { metadata.stringValue(Instrumented::class.java, "id") } returns Optional.of("")
+                every { metadata.booleanValue(Instrumented::class.java, "includeIdInMetric") } returns Optional.of(true)
+                every { context.parameterValues } returns listOf("this-is-a-very-long-id-value-that-exceeds-thirty-two-characters")
+
+                val tagsSlot = slot<Tags>()
+                interceptor.intercept(context)
+
+                verify {
+                    mockSpan.setTag("idOp.id", "this-is-a-very-long-id-value-th")
+                }
+
+                tagsSlot.captured.stream()
+                    .filter { it.key == "id" }
+                    .findFirst()
+                    .get()
+                    .value shouldBe "this-is-a-very-long-id-value-th"
+            }
+        }
+    }
+
+    given("error handling configuration") {
+        val context = mockk<MethodInvocationContext<Any, Any>>()
+        val metadata = mockk<AnnotationMetadata>()
+        val exception = RuntimeException("Test error")
+        
+        beforeEach {
+            every { context.annotationMetadata } returns metadata
+            every { metadata.stringValue(Instrumented::class.java, "operation") } returns Optional.of("errorOp")
+            every { metadata.stringValue(Instrumented::class.java, "id") } returns Optional.empty()
+            every { metadata.booleanValue(Instrumented::class.java, "includeIdInMetric") } returns Optional.of(false)
+            every { context.proceed() } throws exception
+            every { context.returnType } returns mockk {
+                every { type } returns String::class.java
+            }
+        }
+
+        `when`("recordErrors is true") {
+            then("should record error metrics") {
+                every { metadata.booleanValue(Instrumented::class.java, "recordErrors") } returns Optional.of(true)
+
+                shouldThrow<RuntimeException> {
+                    interceptor.intercept(context)
+                }
+
+                verify {
+                    mockRegistry.counter("errorOp.count", any())
+                    mockRegistry.counter("errorOp.errors", Tags.of("error_type", "RuntimeException"))
+                    mockCounter.increment()
+                }
+            }
+        }
+
+        `when`("recordErrors is false") {
+            then("should not record error metrics") {
+                every { metadata.booleanValue(Instrumented::class.java, "recordErrors") } returns Optional.of(false)
+
+                shouldThrow<RuntimeException> {
+                    interceptor.intercept(context)
+                }
+
+                verify(exactly = 0) {
+                    mockRegistry.counter(any(), any())
+                }
+
+                verify {
+                    // But should still annotate span with error
+                    mockSpan.setTag("errorOp.error", true)
+                    mockSpan.setTag("errorOp.error_type", "RuntimeException")
+                    mockSpan.log(any<Map<String, String>>())
+                }
+            }
+        }
+    }
+
+    given("correlation ID handling") {
+        val context = mockk<MethodInvocationContext<Any, Any>>()
+        val metadata = mockk<AnnotationMetadata>()
+        
+        beforeEach {
+            every { context.annotationMetadata } returns metadata
+            every { metadata.stringValue(Instrumented::class.java, "operation") } returns Optional.of("correlationOp")
+            every { metadata.stringValue(Instrumented::class.java, "id") } returns Optional.empty()
+            every { metadata.booleanValue(Instrumented::class.java, "includeIdInMetric") } returns Optional.of(false)
+            every { metadata.booleanValue(Instrumented::class.java, "recordErrors") } returns Optional.of(true)
+            every { context.proceed() } returns "result"
+            every { context.returnType } returns mockk {
+                every { type } returns String::class.java
+            }
+        }
+
+        `when`("correlation ID is present") {
+            then("should include correlation ID in tags and span") {
+                every { mockCorrelationIdContext.id } returns "test-correlation-123"
+
+                val tagsSlot = slot<Tags>()
+                interceptor.intercept(context)
+
+                verify {
+                    mockRegistry.counter("correlationOp.count", capture(tagsSlot))
+                    mockSpan.setTag("correlationOp.correlation_id", "test-correlation-123")
+                }
+
+                tagsSlot.captured.stream()
+                    .filter { it.key == "correlation_id" }
+                    .findFirst()
+                    .get()
+                    .value shouldBe "test-correlation-123"
+            }
+        }
+
+        `when`("correlation ID is null") {
+            then("should not include correlation ID") {
+                every { mockCorrelationIdContext.id } returns null
+
+                val tagsSlot = slot<Tags>()
+                interceptor.intercept(context)
+
+                verify(exactly = 0) {
+                    mockSpan.setTag(any<String>(), any<String>())
+                }
+
+                val correlationIdTags = tagsSlot.captured.stream()
+                    .filter { it.key == "correlation_id" }
+                    .toList()
+
+                correlationIdTags shouldBe emptyList()
+            }
+        }
+    }
+
+    given("CompletableFuture specific behavior") {
+        val context = mockk<MethodInvocationContext<Any, Any>>()
+        val metadata = mockk<AnnotationMetadata>()
+        
+        beforeEach {
+            every { context.annotationMetadata } returns metadata
+            every { metadata.stringValue(Instrumented::class.java, "operation") } returns Optional.of("futureOp")
+            every { metadata.stringValue(Instrumented::class.java, "id") } returns Optional.empty()
+            every { metadata.booleanValue(Instrumented::class.java, "includeIdInMetric") } returns Optional.of(false)
+            every { metadata.booleanValue(Instrumented::class.java, "recordErrors") } returns Optional.of(true)
+            every { context.returnType } returns mockk {
+                every { type } returns CompletableFuture::class.java
+            }
+        }
+
+        `when`("CompletableFuture is returned") {
+            then("should handle completion stage correctly") {
+                val future = CompletableFuture<String>()
+                every { context.proceed() } returns future
+
+                val result = interceptor.intercept(context)
+
+                result shouldBe future
+
+                // Test both success and failure paths
+                future.complete("future-result")
+
+                verify(timeout = 1000) {
+                    mockRegistry.counter("futureOp.count", withArg { tags ->
+                        tags.stream().anyMatch { it.key == "status" && it.value == "success" } shouldBe true
+                    })
+                }
+
+                // Reset and test failure
+                clearMocks(mockRegistry, mockCounter, mockSpan)
+                setupCommonMocks()
+
+                val future2 = CompletableFuture<String>()
+                every { context.proceed() } returns future2
+                interceptor.intercept(context)
+                future2.completeExceptionally(IllegalStateException("Future failed"))
+
+                verify(timeout = 1000) {
+                    mockRegistry.counter("futureOp.count", withArg { tags ->
+                        tags.stream().anyMatch { it.key == "status" && it.value == "error" } shouldBe true
+                    })
+                    mockRegistry.counter("futureOp.errors", Tags.of("error_type", "IllegalStateException"))
+                }
+            }
+        }
+    }
+})
+
 @Singleton
 class InstrumentedInterceptor(
     private val registry: MeterRegistry,
