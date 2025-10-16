@@ -16,6 +16,8 @@ import io.opentracing.Tracer
 import java.util.Optional
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CompletionStage
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Deferred
 
 class InstrumentedInterceptorTest : DescribeSpec({
 
@@ -197,5 +199,69 @@ class InstrumentedInterceptorTest : DescribeSpec({
       verify { registry.timer("order.async.time") }
     }
   }
+
+describe("coroutine (Deferred) handling") {
+
+  it("records success metrics after Deferred completes and tags span with id + correlation") {
+    every { correlation.id } returns "corr-co"
+    val interceptor = InstrumentedInterceptor(registry, tracer, correlation)
+
+    val future = CompletableDeferred<Boolean>()
+
+    val ctx = mockContext(
+      operation = "order.coroutine",
+      idParamName = Optional.of("orderId"),
+      includeId = Optional.of(true),
+      recordErrors = Optional.of(true),
+      argNames = arrayOf("orderId"),
+      params = arrayOf("cor-1"),
+      returnTypeClass = Deferred::class.java
+    ) { future }
+
+    val returned = interceptor.intercept(ctx) as Deferred<*>
+
+    // complete after intercept -> interceptor must handle async completion
+    future.complete(true)
+
+    // verify handlers ran (allow async)
+    verify(timeout = 1000) { registry.counter("order.coroutine.count", any()) }
+    verify { counter.increment() }
+    verify { registry.timer("order.coroutine.time") }
+    verify { span.setTag("order.coroutine.id", "cor-1") }
+    verify { span.setTag("correlation_id", "corr-co") }
+  }
+
+  it("records error metrics when Deferred completes exceptionally and tags span error") {
+    every { correlation.id } returns null
+    val interceptor = InstrumentedInterceptor(registry, tracer, correlation)
+
+    every { registry.counter("order.coroutine.count", any()) } returns counter
+    every { registry.counter("order.coroutine.errors", any()) } returns errorsCounter
+
+    val future = CompletableDeferred<Boolean>()
+
+    val ctx = mockContext(
+      operation = "order.coroutine",
+      idParamName = Optional.of("orderId"),
+      includeId = Optional.of(false),
+      recordErrors = Optional.of(true),
+      argNames = arrayOf("orderId"),
+      params = arrayOf("cor-2"),
+      returnTypeClass = Deferred::class.java
+    ) { future }
+
+    val returned = interceptor.intercept(ctx) as Deferred<*>
+
+    future.completeExceptionally(RuntimeException("coroutine boom"))
+
+    verify(timeout = 1000) { registry.counter("order.coroutine.count", any()) }
+    verify { counter.increment() }
+    verify { registry.counter("order.coroutine.errors", any()) }
+    verify { errorsCounter.increment() }
+    verify { span.setTag("error", true) }
+    verify { span.setTag("order.coroutine.error_type", "RuntimeException") }
+    verify { registry.timer("order.coroutine.time") }
+  }
+}
 })
 ```
