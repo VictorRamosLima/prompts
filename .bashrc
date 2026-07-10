@@ -1,26 +1,9 @@
-export PROJECTS_DIR="$HOME/projects"
-export PROJECTS_CATALOG="${PROJECTS_DIR:-$HOME/projects}/.projects.catalog"
-
 __proj_ps1() {
   local out=""
   [ -n "$PROJECT_ACTIVE" ] && out+="\[\033[36m\]($PROJECT_ACTIVE)\[\033[00m\] "
   [ -n "$FEATURE_ACTIVE" ] && out+="\[\033[35m\][$FEATURE_ACTIVE]\[\033[00m\] "
   printf '%s' "$out"
 }
-
-#  Comandos:
-#    feat create <active_project> <jira-id>  seleciona repos (fzf multi) e cria branch
-#    feat switch <jira-id>            troca p/ a feature (aborta se algo sujo)
-#    feat cd [role]                  navega entre os repos da feature ativa
-#    feat ls [<jira-id>]              lista features, ou repos de uma feature
-#    feat which                       feature ativa + seus repos
-#    feat status                      por repo: branch atual + limpo/sujo
-#    feat finish [<jira-id>]          deleta branches JÁ MERGEADAS, volta develop
-#
-#  SEGURANÇA:
-#    - switch faz dupla passada: 1º verifica TODOS, só age se todos limpos.
-#    - finish só deleta branch mergeada em develop (protege trabalho perdido).
-#    - toda escrita no catálogo faz backup .bak.
 
 export FEATURES_CATALOG="${PROJECTS_DIR:-$HOME/projects}/.features.catalog"
 export FEATURE_ACTIVE_FILE="${PROJECTS_DIR:-$HOME/projects}/.feature.active"
@@ -54,13 +37,13 @@ feat() {
       if command -v fzf >/dev/null 2>&1; then
         selection=$(_project_pieces "$active_project" \
               | fzf --multi --with-nth=1 --delimiter='\t' \
-                    --prompt="repos de $active_project (Tab p/ marcar)> " \
+                    --prompt="$active_project repos (Tab to select)> " \
                     --preview 'ls -la "$(echo {} | cut -f2)" 2>/dev/null') || return
       else
         echo "no fzf: using all repos in project '$active_project'."
         selection=$(_project_pieces "$active_project")
       fi
-      [ -z "$selection" ] && { echo "nada selecionado."; return 1; }
+      [ -z "$selection" ] && { echo "nothing selected."; return 1; }
 
       # registers in catalog + creates branch in each repo
       cp "$FEATURES_CATALOG" "$FEATURES_CATALOG.bak" 2>/dev/null || true
@@ -68,7 +51,7 @@ feat() {
       while IFS=$'\t' read -r role path; do
         [ -z "$path" ] && continue
         rel="${path#$PROJECTS_DIR/}"
-        printf '%s | %s | %s\n' "$jira" "$projeto" "$rel" >> "$FEATURES_CATALOG"
+        printf '%s | %s | %s\n' "$jira" "$active_project" "$rel" >> "$FEATURES_CATALOG"
         echo "── $role ($rel)"
         if [ ! -d "$path/.git" ]; then echo "   is not a git repo, skipped."; continue; fi
         if ! _feat_wt_clean "$path"; then
@@ -79,7 +62,7 @@ feat() {
         git -C "$path" checkout -q develop 2>/dev/null || { echo "   no develop branch, skipped."; continue; }
         git -C "$path" branch -D "$branch" 2>/dev/null
         git -C "$path" checkout -q -b "$branch" && echo "   ✓ $branch created"
-      done <<< "$sel"
+      done <<< "$selection"
 
       printf '%s' "$jira" > "$FEATURE_ACTIVE_FILE"; FEATURE_ACTIVE="$jira"
       echo "→ active feature: $jira ($branch)"
@@ -87,8 +70,8 @@ feat() {
 
     switch|use )
       local jira="$1"
-      [ -z "$jira" ] && { echo "uso: feat switch <jira-id>"; return 1; }
-      _feat_ids | grep -qx "$jira" || { echo "feature '$jira' não existe (veja: feat ls)"; return 1; }
+      [ -z "$jira" ] && { echo "usage: feat switch <jira-id>"; return 1; }
+      _feat_ids | grep -qx "$jira" || { echo "feature '$jira' not found (see: feat ls)"; return 1; }
       local branch; branch="$(_feat_branch "$jira")"
 
       # first time: validates all repositories before starting
@@ -143,17 +126,17 @@ feat() {
 
     which )
       [ -z "$FEATURE_ACTIVE" ] && { echo "no active feature."; return; }
-      echo "feature ativa: $FEATURE_ACTIVE  (branch: $(_feat_branch "$FEATURE_ACTIVE"))"
+      echo "active feature: $FEATURE_ACTIVE  (branch: $(_feat_branch "$FEATURE_ACTIVE"))"
       _feat_rows | awk -F'|' -v f="$FEATURE_ACTIVE" '$1==f { printf "  %s\n", $3 }'
       ;;
 
     status )
       local target="${1:-$FEATURE_ACTIVE}"
       [ -z "$target" ] && { echo "usage: feat status [<jira-id>]"; return 1; }
-      echo "status da feature $target:"
+      echo "feature status $target:"
       local p rel br st
       while read -r p; do
-        [ -d "$p/.git" ] || { echo "  (não-git) ${p#$PROJECTS_DIR/}"; continue; }
+        [ -d "$p/.git" ] || { echo "  (non-git) ${p#$PROJECTS_DIR/}"; continue; }
         rel="${p#$PROJECTS_DIR/}"
         br=$(git -C "$p" rev-parse --abbrev-ref HEAD 2>/dev/null)
         _feat_wt_clean "$p" && st="clean" || st="dirty"
@@ -176,7 +159,7 @@ feat() {
         git -C "$p" fetch --all -q
         if git -C "$p" show-ref --verify --quiet "refs/heads/$branch"; then
           if git -C "$p" branch --merged develop | grep -q " *$branch\$"; then
-            git -C "$p" branch -d "$branch" -q && echo "   ✓ $rel: branch mergeada deletada"
+            git -C "$p" branch -d "$branch" -q && echo "   ✓ $rel: merged branch deleted"
           else
             echo "   $rel: '$branch' not merged — kept (delete manually if desired)."
           fi
@@ -195,7 +178,7 @@ feat() {
 
     * )
       echo "feat: subcommand: create, switch, cd, ls, which, status, finish"
-      [ -n "$FEATURE_ACTIVE" ] && echo "feature ativa: $FEATURE_ACTIVE"
+      [ -n "$FEATURE_ACTIVE" ] && echo "active feature: $FEATURE_ACTIVE"
       ;;
   esac
 }
